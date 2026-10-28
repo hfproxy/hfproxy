@@ -154,12 +154,16 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 			meta.LastMod = sql.NullTime{Time: t, Valid: true}
 		}
 	}
+	sizeKnown := false
 	if size := firstHeaders.Get("X-Linked-Size"); size != "" {
 		if parsedSize, parseErr := strconv.ParseInt(size, 10, 64); parseErr == nil && parsedSize >= 0 {
 			meta.Size = parsedSize
+			sizeKnown = true
 		}
-	} else if upstream.ContentLength >= 0 {
+	}
+	if !sizeKnown && upstream.ContentLength >= 0 {
 		meta.Size = upstream.ContentLength
+		sizeKnown = true
 	}
 	if meta.ContentType == "" {
 		meta.ContentType = "application/octet-stream"

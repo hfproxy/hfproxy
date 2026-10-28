@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
