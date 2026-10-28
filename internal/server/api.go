@@ -80,7 +80,7 @@ func (s *Server) apiV1(w http.ResponseWriter, r *http.Request) {
 			writeProblem(w, r, http.StatusNotFound, "Not found", "This hfproxy API route is not implemented.")
 			return
 		}
-		if !strings.Contains(allow, r.Method) {
+		if !apiMethodAllowed(allow, r.Method) {
 			methodNotAllowedWith(w, allow)
 			return
 		}
@@ -145,6 +145,15 @@ func (s *Server) apiV1(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeProblem(w, r, http.StatusNotFound, "Not found", "This hfproxy API route is not implemented.")
 	}
+}
+
+func apiMethodAllowed(allow, method string) bool {
+	for _, candidate := range strings.Split(allow, ", ") {
+		if candidate == method {
+			return true
+		}
+	}
+	return false
 }
 
 func isMutation(method string) bool {
