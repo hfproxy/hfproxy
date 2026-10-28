@@ -30,7 +30,7 @@ export class GroupsPageComponent implements OnInit {
   protected async load(): Promise<void> {
     this.loading.set(true);
     try {
-      this.groups.set((await this.api.get<{ items: AdminGroup[] }>('/api/v1/groups')).items);
+      this.groups.set(await this.api.listAll<AdminGroup>('/api/v1/groups'));
     } catch (error) {
       this.feedback.showError(AdminApiService.errorMessage(error, 'Unable to load groups.'));
     } finally {

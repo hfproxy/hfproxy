@@ -31,7 +31,7 @@ export class UsersPageComponent implements OnInit {
   protected async load(): Promise<void> {
     this.loading.set(true);
     try {
-      this.users.set((await this.api.get<{ items: AdminUser[] }>('/api/v1/users')).items);
+      this.users.set(await this.api.listAll<AdminUser>('/api/v1/users'));
     } catch (error) {
       this.feedback.showError(AdminApiService.errorMessage(error, 'Unable to load users.'));
     } finally {

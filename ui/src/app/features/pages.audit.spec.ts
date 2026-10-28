@@ -52,7 +52,7 @@ describe('AuditUI pages', () => {
     const page = TestBed.runInInjectionContext(() => new OverviewPageComponent());
     page.ngOnInit();
     http.expectOne('/api/v1/stats').flush(problem401, unauthorized);
-    http.expectOne('/api/v1/repos').flush(problem401, unauthorized);
+    http.expectOne((request) => request.urlWithParams.split('?')[0] === '/api/v1/repos').flush(problem401, unauthorized);
     http.expectOne('/api/v1/downloads/active').flush(problem401, unauthorized);
     await flushMicrotasks();
 
@@ -72,7 +72,7 @@ describe('AuditUI pages', () => {
   it('AuditUI: users page does not submit the create form when required fields are empty / password < 12 chars', async () => {
     const fixture = TestBed.createComponent(UsersPageComponent);
     fixture.detectChanges();
-    http.expectOne('/api/v1/users').flush({ items: [] });
+    http.expectOne((request) => request.urlWithParams.split('?')[0] === '/api/v1/users').flush({ items: [] });
     await fixture.whenStable();
     fixture.detectChanges();
 

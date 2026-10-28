@@ -10,6 +10,27 @@ export class AdminApiService {
     return firstValueFrom(this.http.get<T>(url));
   }
 
+  async listAll<T>(url: string): Promise<T[]> {
+    const items: T[] = [];
+    const seenCursors = new Set<string>();
+    let cursor = '';
+    do {
+      const params = new URLSearchParams({ limit: '200' });
+      if (cursor) params.set('cursor', cursor);
+      const separator = url.includes('?') ? '&' : '?';
+      const page = await this.get<{ items: T[]; next_cursor?: string }>(
+        `${url}${separator}${params.toString()}`,
+      );
+      items.push(...page.items);
+      cursor = page.next_cursor ?? '';
+      if (cursor && seenCursors.has(cursor)) {
+        throw new Error('The API returned a repeated list cursor.');
+      }
+      if (cursor) seenCursors.add(cursor);
+    } while (cursor);
+    return items;
+  }
+
   post<T = unknown>(url: string, body: unknown): Promise<T> {
     return firstValueFrom(this.http.post<T>(url, body, { headers: this.csrfHeaders() }));
   }

@@ -48,7 +48,7 @@ export class RepositoriesPageComponent implements OnInit, OnDestroy {
   protected async load(): Promise<void> {
     this.loading.set(true);
     try {
-      this.repositories.set((await this.api.get<{ items: Repository[] }>('/api/v1/repos')).items);
+      this.repositories.set(await this.api.listAll<Repository>('/api/v1/repos'));
     } catch (error) {
       this.feedback.showError(
         AdminApiService.errorMessage(error, 'Unable to load repository policies.'),

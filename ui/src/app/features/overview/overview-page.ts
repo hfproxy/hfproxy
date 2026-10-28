@@ -41,10 +41,10 @@ export class OverviewPageComponent implements OnInit, OnDestroy {
     try {
       const [stats, repositories] = await Promise.all([
         this.api.get<Stats>('/api/v1/stats'),
-        this.api.get<{ items: Repository[] }>('/api/v1/repos'),
+        this.api.listAll<Repository>('/api/v1/repos'),
       ]);
       this.stats.set(stats);
-      this.repositories.set(repositories.items);
+      this.repositories.set(repositories);
       this.feedback.clear();
     } catch (error) {
       this.feedback.showError(AdminApiService.errorMessage(error, 'Unable to load your overview.'));
