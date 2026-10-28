@@ -74,7 +74,7 @@ func (s *Server) startOrphanedBlobGC(ctx context.Context) {
 
 func (s *Server) collectOrphanedBlobs(ctx context.Context) error {
 	objects := s.currentStorage()
-	if objects == nil || s.currentConfig().CacheGCGrace <= 0 {
+	if objects == nil || s.currentConfig().CacheGCGrace < 0 {
 		return nil
 	}
 	rows, err := s.db.SQL.QueryContext(ctx, `SELECT id FROM blobs b
