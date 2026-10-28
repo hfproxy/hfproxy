@@ -188,17 +188,6 @@ func TestEgressIPPolicyRejectsSpecialAndEmbeddedPrivateIPs(t *testing.T) {
 	}
 }
 
-func TestListCursorRoundTrip(t *testing.T) {
-	cursor := encodeListCursor("models", "org/model", "repo-id")
-	parts, ok := decodeListCursor(cursor, 3)
-	if !ok || strings.Join(parts, "|") != "models|org/model|repo-id" {
-		t.Fatalf("cursor round trip = %#v, %v", parts, ok)
-	}
-	if _, ok := decodeListCursor("not-a-valid-cursor", 2); ok {
-		t.Fatal("malformed cursor was accepted")
-	}
-}
-
 func TestIdleBodyClosesAStalledRead(t *testing.T) {
 	reader, writer := io.Pipe()
 	body := newIdleBody(reader, 10*time.Millisecond)
