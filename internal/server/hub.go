@@ -225,8 +225,20 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	_ = tx.Rollback()
 	tx = nil
 	missKey := repoPK + "|" + commit + "|" + parsed.FilePath
+	expectedLFS := lfsSHA256(firstHeaders.Get("X-Linked-ETag"))
 	leader, done := s.joinCacheMiss(missKey)
+	if r.Method == http.MethodGet && expectedLFS == "" && r.Header.Get("Range") != "" {
+		if leader {
+			defer s.finishCacheMiss(missKey)
+		}
+		s.streamUncachedMiss(w, r, parsed, meta, commit)
+		return
+	}
 	if !leader {
+		if r.Method == http.MethodGet && expectedLFS == "" {
+			s.streamUncachedMiss(w, r, parsed, meta, commit)
+			return
+		}
 		select {
 		case <-done:
 			s.resolveFile(w, r)
@@ -249,7 +261,6 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	var digest string
 	var resume *downloadResume
 	streamed := false
-	expectedLFS := lfsSHA256(firstHeaders.Get("X-Linked-ETag"))
 	if sizeKnown {
 		resumeETag := upstream.Header.Get("ETag")
 		if resumeETag == "" {
@@ -921,6 +932,44 @@ func (s *Server) fetchHub(ctx context.Context, method, requestPath string, query
 		target = next.String()
 	}
 	return nil, first, fmt.Errorf("upstream redirect limit exceeded")
+}
+
+// streamUncachedMiss serves requests that cannot wait for a cache fill, such as
+// cold range requests and followers of an in-progress fill. LFS objects with
+// an advertised digest stay on the verified cache-fill path.
+func (s *Server) streamUncachedMiss(w http.ResponseWriter, r *http.Request, parsed resolvePath, meta artifact, commit string) {
+	headers := make(http.Header)
+	for _, name := range []string{"Range", "If-Range", "If-None-Match", "If-Modified-Since"} {
+		if value := r.Header.Get(name); value != "" {
+			headers.Set(name, value)
+		}
+	}
+	pinned := resolvePath{RepoType: parsed.RepoType, RepoID: parsed.RepoID, Revision: commit, FilePath: parsed.FilePath}
+	response, _, err := s.fetchHub(r.Context(), http.MethodGet, upstreamResolvePath(pinned), safeResolveQuery(r.URL.Query()), headers)
+	if err != nil {
+		s.hubFailure(w, r, err)
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		s.hubStatus(w, r, response.StatusCode, response.Header)
+		return
+	}
+	s.setArtifactHeaders(w, meta, response.Header)
+	w.Header().Set("X-Cache", "MISS")
+	w.Header().Set("X-Repo-Commit", commit)
+	for _, name := range []string{"Content-Range", "Content-Encoding"} {
+		if value := response.Header.Get(name); value != "" {
+			w.Header().Set(name, value)
+		}
+	}
+	if response.ContentLength >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(response.ContentLength, 10))
+	}
+	w.WriteHeader(response.StatusCode)
+	if _, err := io.Copy(w, response.Body); err != nil {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func configLoopback(host string) bool {
