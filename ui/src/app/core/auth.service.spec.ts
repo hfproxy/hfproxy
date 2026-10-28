@@ -12,6 +12,6 @@ describe('AuthService', () => {
     const auth = TestBed.inject(AuthService);
 
     expect(auth.principal()).toBeNull();
-    expect(auth.busy()).toBeFalse();
+    expect(auth.busy()).toBeFalsy();
   });
 });
