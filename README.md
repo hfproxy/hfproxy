@@ -98,9 +98,9 @@ Environment variables use the `HFPROXY_` prefix. Common settings for local Compo
 | Area | Main variables |
 | --- | --- |
 | HTTP and database | LISTEN_ADDR, PUBLIC_URL, DATABASE_URL, AUTO_MIGRATE, LOG_LEVEL |
-| Hugging Face | HF_BASE_URL, HF_TOKEN, HF_ALLOWED_REDIRECT_HOSTS, HF_TIMEOUT |
+| Hugging Face | HF_BASE_URL, HF_PROXY_URL, HF_TOKEN, HF_ALLOWED_REDIRECT_HOSTS, HF_TIMEOUT |
 | S3 | S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_PREFIX, S3_FORCE_PATH_STYLE, S3_SERVER_SIDE_ENCRYPTION, S3_ACCESS_KEY, S3_SECRET_KEY |
-| Authentication | AUTH_MODE=local or oidc, SESSION_SECRET, ANONYMOUS_PUBLIC_READ |
+| Authentication | AUTH_MODE=local or oidc, SESSION_SECRET, SESSION_IDLE_TTL, SESSION_ABSOLUTE_TTL, ANONYMOUS_PUBLIC_READ |
 | OIDC | OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_REDIRECT_URL, OIDC_AUTO_PROVISION |
 | LDAP | LDAP_URL, LDAP_STARTTLS, LDAP_BIND_DN, LDAP_BIND_PASSWORD, LDAP_BASE_DN, LDAP_USER_FILTER, LDAP_AUTO_PROVISION |
 | Cache limits | CACHE_MAX_FILE_SIZE, CACHE_REF_TTL, CACHE_NEGATIVE_TTL, CACHE_GC_GRACE |
@@ -132,7 +132,7 @@ Supported Hub read routes:
 
 The proxy supports branch, tag, and SHA revisions; nested paths; HEAD; ETag/304; and simple Range requests from the cache. Mutable references are cached for `CACHE_REF_TTL` (60 seconds by default), while a SHA remains immutable. Multi-part ranges are explicitly rejected. Hub metadata uses an allowlist of routes; there is no generic URL proxy.
 
-The operations API is under `/api/v1` and covers identity and providers, statistics, repositories and grants, cache, users (`GET`/`POST /users`, `PATCH /users/{id}`), groups (`GET`/`POST /groups`, `PATCH /groups/{id}`), audit, and settings (`GET`/`PUT /settings`). Errors use `application/problem+json`. Administrative operations require the admin role and browser mutations require CSRF validation.
+The operations API is under `/api/v1` and covers identity and providers, statistics, repositories and grants, cache, users (`GET`/`POST /users`, `PATCH /users/{id}`), groups (`GET`/`POST /groups`, `PATCH /groups/{id}`), audit, and settings (`GET`/`PUT /settings`). Errors use `application/problem+json`. Identity and settings operations require the admin role; cache purge and repository preload are available to operators and administrators. Browser mutations require CSRF validation.
 
 A cache hit never bypasses authorization. Anonymous reads apply only to repositories explicitly registered as public. An allowlist policy grants access to explicitly authorized local users and groups; `admin_only` is the default policy.
 
@@ -178,8 +178,8 @@ Health endpoints: `/healthz` provides liveness without dependency checks; `/read
 - OIDC verifies identities and sessions, but IdP group claims are not automatically mapped to local groups.
 - LDAP supports LDAPS/StartTLS and user binds; Active Directory group synchronization is not included.
 - The administration console manages runtime settings, repositories and grants, users, groups, cache entries, and audit events. Database connection, listen address, and session encryption secret remain environment-managed bootstrap settings.
-- Multi-part Range requests, Prometheus metrics, distributed rate limits, periodic orphan-blob collection, and paginated cache purge still need work before large-scale operation.
-- Negative-result caching is not implemented yet; `CACHE_NEGATIVE_TTL` and `CACHE_GC_GRACE` are reserved settings and currently have no effect.
+- Multi-part Range requests, Prometheus metrics, distributed rate limits, and paginated cache purge still need work before large-scale operation.
+- Negative-result caching is in-memory per process; `CACHE_NEGATIVE_TTL` controls its lifetime. Orphaned blobs are collected periodically after `CACHE_GC_GRACE`.
 - Public policies control local access; they do not replace Hugging Face license terms or gated-access conditions.
 
 Do not claim Xet or full Transformers compatibility without running a client-version matrix against representative repositories.

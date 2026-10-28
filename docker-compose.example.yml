@@ -2,7 +2,7 @@
 # Les valeurs marquées comme obligatoires sont injectées depuis l’orchestrateur ou un secret manager.
 services:
   hfproxy:
-    image: ghcr.io/your-org/hfproxy:1.0.0
+    image: ghcr.io/your-org/hfproxy:v0.0.2
     environment:
       HFPROXY_LISTEN_ADDR: 0.0.0.0:8080
       HFPROXY_PUBLIC_URL: ${HFPROXY_PUBLIC_URL:?Set the public HTTPS URL}

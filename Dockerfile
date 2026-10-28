@@ -1,5 +1,5 @@
 ARG GO_VERSION=1.27.3
-ARG NODE_VERSION=24-alpine
+ARG NODE_VERSION=24.22.1-alpine
 
 FROM node:${NODE_VERSION} AS ui
 WORKDIR /ui
@@ -9,7 +9,7 @@ COPY ui/ ./
 RUN npm run build
 
 FROM golang:${GO_VERSION}-alpine AS build
-ARG BUILD_VERSION=1.0.0
+ARG BUILD_VERSION=0.0.2
 ARG BUILD_COMMIT=unknown
 
 RUN apk add --no-cache ca-certificates git
@@ -18,7 +18,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=ui /ui/dist/hfproxy/browser ./internal/server/web/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${BUILD_VERSION} -X main.commit=${BUILD_COMMIT}" -o /out/hfproxy ./cmd/hfproxy
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${BUILD_VERSION} -X github.com/nicolas/hfproxy/internal/server.Version=${BUILD_VERSION} -X main.commit=${BUILD_COMMIT}" -o /out/hfproxy ./cmd/hfproxy
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates \
@@ -26,6 +26,7 @@ RUN apk add --no-cache ca-certificates \
     && adduser -S -D -H -u 65532 -G hfproxy hfproxy
 COPY --from=build /out/hfproxy /usr/local/bin/hfproxy
 USER 65532:65532
+ENV HFPROXY_LISTEN_ADDR=0.0.0.0:8080
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/hfproxy"]
 CMD ["serve"]
