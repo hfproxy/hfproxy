@@ -380,6 +380,22 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// S3 calls must not run inside a database transaction: each transaction
+	// reserves a pool connection, and slow uploads can exhaust the pool while
+	// their progress writers need connections of their own.
+	var blobExists bool
+	if err = s.db.SQL.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM blobs WHERE sha256=$1)`, digest).Scan(&blobExists); err != nil {
+		s.finishDownload(r.Context(), downloadID, size, "metadata")
+		writeProblem(w, r, 500, "Cache metadata error", "Unable to check blob metadata.")
+		return
+	}
+	if !blobExists {
+		if err := objectStore.UploadFile(r.Context(), tmp, key, contentType, size); err != nil {
+			s.finishDownload(r.Context(), downloadID, size, "storage")
+			writeProblem(w, r, 502, "Storage error", "The downloaded file could not be published to object storage.")
+			return
+		}
+	}
 	tx, err = s.db.SQL.BeginTx(r.Context(), nil)
 	if err != nil {
 		s.finishDownload(r.Context(), downloadID, size, "metadata")
@@ -389,17 +405,13 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	var blobID, existingKey string
 	err = tx.QueryRowContext(r.Context(), `SELECT id,storage_key FROM blobs WHERE sha256=$1 FOR UPDATE`, digest).Scan(&blobID, &existingKey)
 	if err == sql.ErrNoRows {
-		if err = objectStore.UploadFile(r.Context(), tmp, key, contentType, size); err != nil {
-			s.finishDownload(r.Context(), downloadID, size, "storage")
-			writeProblem(w, r, 502, "Storage error", "The downloaded file could not be published to object storage.")
-			return
-		}
-		err = tx.QueryRowContext(r.Context(), `INSERT INTO blobs(id,sha256,size_bytes,storage_key,content_type,verified_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(sha256) DO UPDATE SET orphaned_at=NULL RETURNING id`, db.NewID(), digest, size, key, contentType).Scan(&blobID)
+		err = tx.QueryRowContext(r.Context(), `INSERT INTO blobs(id,sha256,size_bytes,storage_key,content_type,verified_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(sha256) DO UPDATE SET orphaned_at=NULL RETURNING id,storage_key`, db.NewID(), digest, size, key, contentType).Scan(&blobID, &existingKey)
 		if err != nil {
 			s.finishDownload(r.Context(), downloadID, size, "metadata")
 			writeProblem(w, r, 500, "Cache metadata error", "Unable to publish cache metadata.")
 			return
 		}
+		key = existingKey
 	} else if err != nil {
 		s.finishDownload(r.Context(), downloadID, size, "metadata")
 		writeProblem(w, r, 500, "Cache metadata error", "Unable to read blob metadata.")
