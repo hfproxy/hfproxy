@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/hfproxy/hfproxy/actions/workflows/ci.yml"><img src="https://github.com/hfproxy/hfproxy/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status: formatting, vet, tests, and build"></a>
-  <a href="https://github.com/hfproxy/hfproxy/tags"><img src="https://img.shields.io/github/v/tag/hfproxy/hfproxy?label=version" alt="Latest version tag"></a>
+  <a href="https://github.com/hfproxy/hfproxy/releases/latest"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2Fhfproxy%2Fhfproxy%2Freleases%2Flatest&amp;query=%24.tag_name&amp;label=version&amp;color=blue" alt="Latest published version"></a>
   <a href="https://github.com/hfproxy/hfproxy/pkgs/container/hfproxy"><img src="https://img.shields.io/badge/container-GHCR-2496ED?logo=docker&amp;logoColor=white" alt="Container image on GitHub Container Registry"></a>
   <img src="https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue?logo=docker&amp;logoColor=white" alt="Supported container platforms: amd64 and arm64">
 </p>
