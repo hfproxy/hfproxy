@@ -3,7 +3,7 @@ name: Publish Docker image
 on:
   push:
     tags:
-      - 'v*'
+      - '[0-9]*.[0-9]*.[0-9]*'
 
 permissions:
   contents: read
@@ -28,16 +28,18 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tags must use vMAJOR.MINOR.PATCH, optionally followed by a prerelease suffix."
+          core='(0|[1-9][0-9]*)'
+          prerelease='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+          if [[ ! "$RELEASE_TAG" =~ ^${core}\.${core}\.${core}(-${prerelease}(\.${prerelease})*)?$ ]]; then
+            echo "Release tags must use MAJOR.MINOR.PATCH without a leading v, optionally followed by a prerelease suffix."
             exit 1
           fi
 
-      - name: Normalize build version
+      - name: Set build version
         id: version
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: echo "value=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+        run: echo "value=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
@@ -57,6 +59,7 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
           tags: |
             type=ref,event=tag
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
