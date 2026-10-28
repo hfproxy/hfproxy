@@ -59,15 +59,15 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.renderLogin(w, data, http.StatusBadRequest)
 		return
 	}
-	if retryAfter, ok := s.allowLoginAttempt(r, r.FormValue("username")); !ok {
-		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-		writeProblem(w, r, http.StatusTooManyRequests, "Too many login attempts", "Retry later before attempting to sign in again.")
-		return
-	}
 	csrfCookie, err := r.Cookie("hfproxy_login_csrf")
 	if err != nil || !constantEqual(csrfCookie.Value, r.FormValue("csrf_token")) {
 		data.Error = "La requête a expiré. Rechargez la page puis réessayez."
 		s.renderLogin(w, data, http.StatusForbidden)
+		return
+	}
+	if retryAfter, ok := s.allowLoginAttempt(r, r.FormValue("username")); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeProblem(w, r, http.StatusTooManyRequests, "Too many login attempts", "Retry later before attempting to sign in again.")
 		return
 	}
 	username := strings.TrimSpace(r.FormValue("username"))
