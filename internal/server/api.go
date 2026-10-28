@@ -1078,6 +1078,13 @@ func (s *Server) apiUserPatch(w http.ResponseWriter, r *http.Request, id string)
 		return
 	}
 	defer tx.Rollback()
+	// Serialize changes that could remove an active administrator before
+	// locking the target row. Locking only that row lets concurrent requests
+	// each observe the other administrator and both demote successfully.
+	if _, err := tx.ExecContext(r.Context(), `SELECT pg_advisory_xact_lock(7242)`); err != nil {
+		writeProblem(w, r, 500, "Database error", "Unable to validate administrator safety.")
+		return
+	}
 	var currentRole, currentStatus string
 	if err := tx.QueryRowContext(r.Context(), `SELECT role,status FROM users WHERE id=$1 FOR UPDATE`, id).Scan(&currentRole, &currentStatus); errors.Is(err, sql.ErrNoRows) {
 		writeProblem(w, r, 404, "User not found", "The user does not exist.")
