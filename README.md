@@ -56,6 +56,8 @@ Open http://localhost:8080 and sign in. The overview shows the cache, policies, 
 
     docker compose exec hfproxy hfproxy admin token create --username admin --name laptop
 
+Tokens default to the `read` scope. For an administrator token that can call write endpoints, use `--scope write`; use `--scope admin` only when the owner is an administrator. Operators can create `read` or `write` tokens, while readers can create only `read` tokens.
+
 Then configure a Python client:
 
     export HF_ENDPOINT=http://localhost:8080

@@ -371,6 +371,7 @@ func tokenCommand(ctx context.Context, store *db.Store, cfg config.Config, args 
 		flags := flag.NewFlagSet("admin token create", flag.ContinueOnError)
 		username := flags.String("username", "", "owner username")
 		name := flags.String("name", "", "token label")
+		scope := flags.String("scope", "read", "token scope: read, write, or admin (limited by owner role)")
 		expires := flags.Duration("expires", 0, "optional lifetime, such as 720h")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
@@ -381,9 +382,12 @@ func tokenCommand(ctx context.Context, store *db.Store, cfg config.Config, args 
 		if *expires < 0 {
 			return fmt.Errorf("--expires must be positive")
 		}
-		var userID string
-		if err := store.SQL.QueryRowContext(ctx, `SELECT id FROM users WHERE username=$1 AND status='active'`, *username).Scan(&userID); err != nil {
+		var userID, role string
+		if err := store.SQL.QueryRowContext(ctx, `SELECT id,role FROM users WHERE username=$1 AND status='active'`, *username).Scan(&userID, &role); err != nil {
 			return fmt.Errorf("active user not found")
+		}
+		if err := validateTokenScope(role, *scope); err != nil {
+			return err
 		}
 		secret, err := randomToken()
 		if err != nil {
@@ -396,7 +400,7 @@ func tokenCommand(ctx context.Context, store *db.Store, cfg config.Config, args 
 		if *expires > 0 {
 			expiry = time.Now().Add(*expires)
 		}
-		_, err = store.SQL.ExecContext(ctx, `INSERT INTO access_tokens(id,user_id,token_hash,prefix,name,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, id, userID, digest, prefix, *name, expiry)
+		_, err = store.SQL.ExecContext(ctx, `INSERT INTO access_tokens(id,user_id,token_hash,prefix,name,expires_at,scopes) VALUES($1,$2,$3,$4,$5,$6,$7)`, id, userID, digest, prefix, *name, expiry, []string{*scope})
 		if err != nil {
 			return err
 		}
@@ -451,6 +455,24 @@ func tokenCommand(ctx context.Context, store *db.Store, cfg config.Config, args 
 	default:
 		return fmt.Errorf("unknown token command %q", args[0])
 	}
+}
+
+func validateTokenScope(role, scope string) error {
+	switch scope {
+	case "read":
+		return nil
+	case "write":
+		if role == "admin" || role == "operator" {
+			return nil
+		}
+	case "admin":
+		if role == "admin" {
+			return nil
+		}
+	default:
+		return fmt.Errorf("--scope must be read, write, or admin")
+	}
+	return fmt.Errorf("role %q cannot create a token with scope %q", role, scope)
 }
 
 func cache(args []string) error {
