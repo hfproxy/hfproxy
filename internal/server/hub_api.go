@@ -44,7 +44,7 @@ func (s *Server) hubAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	copyHubHeaders(w, resp.Header, r)
+	copyHubHeaders(w, resp.Header, r, s.currentConfig().PublicURL)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		s.hubStatus(w, r, resp.StatusCode, resp.Header)
 		return
@@ -135,18 +135,18 @@ func parseHubAPIPath(escaped string, incoming url.Values) (hubMetadataPath, stri
 	return hubMetadataPath{RepoType: decoded[1], RepoID: repoID}, upstreamPath, query, nil
 }
 
-func copyHubHeaders(w http.ResponseWriter, headers http.Header, r *http.Request) {
+func copyHubHeaders(w http.ResponseWriter, headers http.Header, r *http.Request, publicURL string) {
 	for _, key := range []string{"Content-Type", "Content-Length", "ETag", "Last-Modified", "Cache-Control", "X-Repo-Commit", "X-Request-Id", "X-Total-Count"} {
 		if value := headers.Get(key); value != "" {
 			w.Header().Set(key, value)
 		}
 	}
-	if link := rewritePaginationLink(headers.Get("Link"), r); link != "" {
+	if link := rewritePaginationLink(headers.Get("Link"), r, publicURL); link != "" {
 		w.Header().Set("Link", link)
 	}
 }
 
-func rewritePaginationLink(value string, r *http.Request) string {
+func rewritePaginationLink(value string, r *http.Request, publicURL string) string {
 	if value == "" {
 		return ""
 	}
@@ -166,11 +166,17 @@ func rewritePaginationLink(value string, r *http.Request) string {
 			if !strings.HasPrefix(u.Path, "/api/") {
 				continue
 			}
-			scheme := "http"
-			if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-				scheme = "https"
+			if base, err := url.Parse(publicURL); err == nil && base.IsAbs() && base.Host != "" {
+				u.Scheme = base.Scheme
+				u.Host = base.Host
+				u.Path = strings.TrimRight(base.Path, "/") + u.Path
+			} else {
+				scheme := "http"
+				if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+					scheme = "https"
+				}
+				u.Scheme, u.Host = scheme, r.Host
 			}
-			u.Scheme, u.Host = scheme, r.Host
 			part = part[:start+1] + u.String() + part[end:]
 		}
 		kept = append(kept, strings.TrimSpace(part))
