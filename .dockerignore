@@ -3,6 +3,7 @@
 .aws
 .codex
 .secrets
+secrets
 .env
 *.log
 bin

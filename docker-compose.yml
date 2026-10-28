@@ -47,7 +47,8 @@ services:
       HFPROXY_AUTO_MIGRATE: "true"
       HFPROXY_HF_BASE_URL: https://huggingface.co
       HFPROXY_HF_PROXY_URL: ${HFPROXY_HF_PROXY_URL:-}
-      HFPROXY_HF_TOKEN_FILE: ${HFPROXY_HF_TOKEN_FILE:-/run/secrets/hf_token}
+      HFPROXY_HF_TOKEN_FILE: ${HFPROXY_HF_TOKEN_FILE:-}
+      HFPROXY_HF_TOKEN: ${HFPROXY_HF_TOKEN:-}
       HFPROXY_S3_ENDPOINT: http://garage:3900
       HFPROXY_S3_REGION: garage
       HFPROXY_S3_BUCKET: ${GARAGE_DEFAULT_BUCKET:-hfproxy}

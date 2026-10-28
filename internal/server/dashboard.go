@@ -99,7 +99,7 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, p *Prin
 		data.CSRF = csrf.Value
 		data.Logout = s.renderDashboardLogout(w, csrf.Value)
 	}
-	visibility := `($1='admin' OR r.access_policy='public' OR EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$2) OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$2))`
+	visibility := `($1='admin' OR r.access_policy='public' OR (r.access_policy='allowlist' AND (EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$2) OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$2))))`
 	_ = s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM repositories r WHERE r.deleted_at IS NULL AND `+visibility, p.Role, p.ID).Scan(&data.RepoCount)
 	_ = s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE `+visibility, p.Role, p.ID).Scan(&data.ArtifactCount, &data.CacheBytes)
 	data.CacheSize = formatBytes(data.CacheBytes)
