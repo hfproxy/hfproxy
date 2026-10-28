@@ -1,10 +1,25 @@
 package config
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestParsePrefixes(t *testing.T) {
+	got, err := parsePrefixes([]string{"10.0.0.7/8", "2001:db8::/32"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("2001:db8::/32")}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("parsePrefixes() = %v, want %v", got, want)
+	}
+	if _, err := parsePrefixes([]string{"not-a-cidr"}); err == nil {
+		t.Fatal("parsePrefixes accepted an invalid CIDR")
+	}
+}
 
 func TestNormalizeAllowedHosts(t *testing.T) {
 	got, err := NormalizeAllowedHosts([]string{" *.HF.co. ", "HF.co"})

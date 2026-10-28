@@ -13,6 +13,7 @@ import (
 type Config struct {
 	ListenAddr             string
 	PublicURL              string
+	TrustedProxies         []netip.Prefix
 	LogLevel               string
 	DatabaseURL            string
 	AutoMigrate            bool
@@ -60,6 +61,10 @@ func Load() (Config, error) {
 	var err error
 	c.ListenAddr = value("LISTEN_ADDR", "127.0.0.1:8080")
 	c.PublicURL = value("PUBLIC_URL", "")
+	c.TrustedProxies, err = parsePrefixes(split(value("TRUSTED_PROXIES", "")))
+	if err != nil {
+		return Config{}, fmt.Errorf("HFPROXY_TRUSTED_PROXIES: %w", err)
+	}
 	c.LogLevel = strings.ToLower(value("LOG_LEVEL", "info"))
 	c.DatabaseURL = secret("DATABASE_URL", "")
 	c.AutoMigrate = boolean("AUTO_MIGRATE", false)
@@ -321,6 +326,18 @@ func split(value string) []string {
 		}
 	}
 	return result
+}
+
+func parsePrefixes(values []string) ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q", value)
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
 }
 
 func NormalizeAllowedHosts(values []string) ([]string, error) {

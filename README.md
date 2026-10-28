@@ -164,6 +164,8 @@ Use a pinned version in production. The `latest` tag follows the newest stable v
 
 The first GHCR package is private by default. Sign in with `docker login ghcr.io` to pull a private image, or change the package visibility to Public in the package settings to allow anonymous pulls.
 
+When running behind a reverse proxy, set `HFPROXY_TRUSTED_PROXIES` to a comma-separated list of the proxy CIDRs. hfproxy uses `X-Forwarded-For` for login rate limiting only when the direct peer is in this list; forwarded headers from other peers are ignored.
+
 To publish a later release, push another version tag, for example `v0.0.4`:
 
     git tag v0.0.4

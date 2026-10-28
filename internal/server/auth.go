@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/mail"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -420,10 +421,7 @@ var dummyPasswordHash = func() string {
 }()
 
 func (s *Server) allowLoginAttempt(r *http.Request, username string) (int, bool) {
-	host := r.RemoteAddr
-	if parsed, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		host = parsed
-	}
+	host := s.loginClientIP(r)
 	keys := []string{"ip:" + host, "user:" + strings.ToLower(strings.TrimSpace(username))}
 	now := time.Now()
 	s.loginMu.Lock()
@@ -444,6 +442,42 @@ func (s *Server) allowLoginAttempt(r *http.Request, username string) (int, bool)
 		s.loginBuckets[key] = bucket
 	}
 	return 0, true
+}
+
+func (s *Server) loginClientIP(r *http.Request) string {
+	remoteHost := r.RemoteAddr
+	if parsed, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		remoteHost = parsed
+	}
+	remote, err := netip.ParseAddr(remoteHost)
+	if err != nil {
+		return remoteHost
+	}
+	remote = remote.Unmap()
+	trusted := func(ip netip.Addr) bool {
+		for _, prefix := range s.currentConfig().TrustedProxies {
+			if prefix.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	if !trusted(remote) {
+		return remote.String()
+	}
+	forwarded := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	client := remote
+	for i := len(forwarded) - 1; i >= 0; i-- {
+		if !trusted(client) {
+			break
+		}
+		ip, err := netip.ParseAddr(strings.TrimSpace(forwarded[i]))
+		if err != nil {
+			return remote.String()
+		}
+		client = ip.Unmap()
+	}
+	return client.String()
 }
 
 func verifyPassword(encoded, password string) bool {

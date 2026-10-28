@@ -6,6 +6,7 @@ services:
     environment:
       HFPROXY_LISTEN_ADDR: 0.0.0.0:8080
       HFPROXY_PUBLIC_URL: ${HFPROXY_PUBLIC_URL:?Set the public HTTPS URL}
+      HFPROXY_TRUSTED_PROXIES: ${HFPROXY_TRUSTED_PROXIES:-}
       HFPROXY_DATABASE_URL_FILE: /run/secrets/database_url
       HFPROXY_AUTO_MIGRATE: "false"
       HFPROXY_HF_BASE_URL: https://huggingface.co
