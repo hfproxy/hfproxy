@@ -448,7 +448,7 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	s.serveOrAcknowledgePreload(w, r, cached, "MISS")
 }
 
-func (s *Server) negativeLookup(key string) (int, http.Header, bool) {
+func (s *Server) legacyNegativeLookup(key string) (int, http.Header, bool) {
 	s.negativeMu.Lock()
 	defer s.negativeMu.Unlock()
 	entry, ok := s.negative[key]
@@ -461,7 +461,7 @@ func (s *Server) negativeLookup(key string) (int, http.Header, bool) {
 	return entry.status, entry.headers.Clone(), true
 }
 
-func (s *Server) negativeStore(key string, status int, headers http.Header) {
+func (s *Server) legacyNegativeStore(key string, status int, headers http.Header) {
 	s.negativeMu.Lock()
 	defer s.negativeMu.Unlock()
 	if s.negative == nil {
@@ -476,7 +476,7 @@ func (s *Server) negativeStore(key string, status int, headers http.Header) {
 	s.negative[key] = negativeCacheEntry{expires: time.Now().Add(s.currentConfig().CacheNegativeTTL), status: status, headers: selected}
 }
 
-func (s *Server) joinCacheMiss(key string) (bool, <-chan struct{}) {
+func (s *Server) legacyJoinCacheMiss(key string) (bool, <-chan struct{}) {
 	s.missMu.Lock()
 	defer s.missMu.Unlock()
 	if s.misses == nil {
@@ -489,7 +489,7 @@ func (s *Server) joinCacheMiss(key string) (bool, <-chan struct{}) {
 	return true, s.misses[key].done
 }
 
-func (s *Server) finishCacheMiss(key string) {
+func (s *Server) legacyFinishCacheMiss(key string) {
 	s.missMu.Lock()
 	defer s.missMu.Unlock()
 	if flight, ok := s.misses[key]; ok {
@@ -498,7 +498,7 @@ func (s *Server) finishCacheMiss(key string) {
 	}
 }
 
-func (s *Server) startOrphanedBlobGC(ctx context.Context) {
+func (s *Server) legacyStartOrphanedBlobGC(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
@@ -513,7 +513,7 @@ func (s *Server) startOrphanedBlobGC(ctx context.Context) {
 	}()
 }
 
-func (s *Server) collectOrphanedBlobs(ctx context.Context) error {
+func (s *Server) legacyCollectOrphanedBlobs(ctx context.Context) error {
 	objects := s.currentStorage()
 	if objects == nil || s.currentConfig().CacheGCGrace <= 0 {
 		return nil
