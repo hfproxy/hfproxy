@@ -2,6 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AdminApiService } from '../../core/admin-api.service';
+import { AuthService } from '../../core/auth.service';
 import { FeedbackService } from '../../core/feedback.service';
 import { Grant, Policy, PreloadJob, RepoType, Repository } from '../../core/admin.types';
 import { IconComponent } from '../../shared/icon/icon';
@@ -15,6 +16,7 @@ import { PageHeadingComponent } from '../../shared/page-heading/page-heading';
 })
 export class RepositoriesPageComponent implements OnInit, OnDestroy {
   private readonly api = inject(AdminApiService);
+  private readonly auth = inject(AuthService);
   private readonly feedback = inject(FeedbackService);
   protected readonly loading = signal(true);
   protected readonly busy = signal(false);
@@ -68,13 +70,19 @@ export class RepositoriesPageComponent implements OnInit, OnDestroy {
   }
 
   protected async savePolicy(repo: Repository): Promise<void> {
-    await this.mutate(async () => {
-      await this.api.patch(`/api/v1/repos/${encodeURIComponent(repo.id)}`, {
-        access_policy: repo.access_policy,
+    const previous = repo.access_policy;
+    try {
+      await this.mutate(async () => {
+        await this.api.patch(`/api/v1/repos/${encodeURIComponent(repo.id)}`, {
+          access_policy: repo.access_policy,
+        });
+        this.feedback.showSuccess(`Access policy updated for ${repo.repo_id}.`);
+        await this.load();
       });
-      this.feedback.showSuccess(`Access policy updated for ${repo.repo_id}.`);
-      await this.load();
-    });
+    } catch (error) {
+      repo.access_policy = previous;
+      this.feedback.showError(AdminApiService.errorMessage(error, 'Unable to update this policy.'));
+    }
   }
 
   protected async preload(repo: Repository): Promise<void> {
@@ -203,6 +211,10 @@ export class RepositoriesPageComponent implements OnInit, OnDestroy {
       this.preloadJobs.set(result.preloads);
     } catch {
       // Keep the most recent preload status if a poll briefly fails.
+      if (!this.auth.principal() && this.preloadPoll !== undefined) {
+        window.clearInterval(this.preloadPoll);
+        this.preloadPoll = undefined;
+      }
     } finally {
       this.preloadPollRunning = false;
     }

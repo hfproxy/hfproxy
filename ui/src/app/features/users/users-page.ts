@@ -1,6 +1,6 @@
 import { CommonModule } from '@angular/common';
 import { Component, OnInit, inject, signal } from '@angular/core';
-import { FormsModule } from '@angular/forms';
+import { FormsModule, NgForm } from '@angular/forms';
 import { AuthService } from '../../core/auth.service';
 import { AdminApiService } from '../../core/admin-api.service';
 import { FeedbackService } from '../../core/feedback.service';
@@ -21,6 +21,7 @@ export class UsersPageComponent implements OnInit {
   protected readonly loading = signal(true);
   protected readonly busy = signal(false);
   protected readonly users = signal<AdminUser[]>([]);
+  private readonly savedValues = new Map<string, { role: string; status: string }>();
   protected draft = { username: '', email: '', display_name: '', password: '', role: 'reader' };
 
   ngOnInit(): void {
@@ -38,7 +39,11 @@ export class UsersPageComponent implements OnInit {
     }
   }
 
-  protected async create(): Promise<void> {
+  protected async create(form?: NgForm): Promise<void> {
+    if (form && !form.valid) {
+      form.form.markAllAsTouched();
+      return;
+    }
     this.busy.set(true);
     try {
       await this.api.post('/api/v1/users', this.draft);
@@ -53,18 +58,32 @@ export class UsersPageComponent implements OnInit {
   }
 
   protected async save(user: AdminUser): Promise<void> {
+    const previous = this.savedValues.get(user.id) ?? { role: user.role, status: user.status };
     this.busy.set(true);
     try {
       await this.api.patch(`/api/v1/users/${encodeURIComponent(user.id)}`, {
         role: user.role,
         status: user.status,
       });
+      this.savedValues.delete(user.id);
       this.feedback.showSuccess(`Updated ${user.username}.`);
     } catch (error) {
+      user.role = previous.role;
+      user.status = previous.status;
       this.feedback.showError(AdminApiService.errorMessage(error, 'Unable to update this user.'));
     } finally {
       this.busy.set(false);
     }
+  }
+
+  protected setRole(user: AdminUser, role: string): void {
+    this.savedValues.set(user.id, this.savedValues.get(user.id) ?? { role: user.role, status: user.status });
+    user.role = role;
+  }
+
+  protected setStatus(user: AdminUser, status: string): void {
+    this.savedValues.set(user.id, this.savedValues.get(user.id) ?? { role: user.role, status: user.status });
+    user.status = status;
   }
 
   protected get currentUserId(): string {
