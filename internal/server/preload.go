@@ -47,7 +47,7 @@ type hubTreeEntry struct {
 }
 
 func (s *Server) startRepoPreload(w http.ResponseWriter, r *http.Request, repositoryID string) {
-	principal, ok := s.requireAdmin(w, r)
+	principal, ok := s.requireOperator(w, r)
 	if !ok {
 		return
 	}
