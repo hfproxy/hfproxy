@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const negativeCacheMaxEntries = 10_000
+
 func (s *Server) negativeLookup(key string) (int, http.Header, bool) {
 	s.negativeMu.Lock()
 	defer s.negativeMu.Unlock()
@@ -26,13 +28,29 @@ func (s *Server) negativeStore(key string, status int, headers http.Header) {
 	if s.negative == nil {
 		s.negative = make(map[string]negativeCacheEntry)
 	}
+	now := time.Now()
+	for existing, entry := range s.negative {
+		if !now.Before(entry.expires) {
+			delete(s.negative, existing)
+		}
+	}
+	if _, exists := s.negative[key]; !exists && len(s.negative) >= negativeCacheMaxEntries {
+		oldestKey := ""
+		var oldestExpiry time.Time
+		for existing, entry := range s.negative {
+			if oldestKey == "" || entry.expires.Before(oldestExpiry) {
+				oldestKey, oldestExpiry = existing, entry.expires
+			}
+		}
+		delete(s.negative, oldestKey)
+	}
 	selected := make(http.Header)
 	for _, name := range []string{"X-Error-Code", "X-Error-Message", "X-Repo-Commit", "Retry-After"} {
 		if value := headers.Get(name); value != "" {
 			selected.Set(name, value)
 		}
 	}
-	s.negative[key] = negativeCacheEntry{expires: time.Now().Add(s.currentConfig().CacheNegativeTTL), status: status, headers: selected}
+	s.negative[key] = negativeCacheEntry{expires: now.Add(s.currentConfig().CacheNegativeTTL), status: status, headers: selected}
 }
 
 func (s *Server) joinCacheMiss(key string) (bool, <-chan struct{}) {
