@@ -489,10 +489,19 @@ func (s *Server) createSession(ctx context.Context, userID string, w http.Respon
 	if err != nil {
 		return "", err
 	}
-	secure := strings.HasPrefix(s.currentConfig().PublicURL, "https://") || strings.HasPrefix(s.currentConfig().OIDCRedirectURL, "https://")
-	http.SetCookie(w, &http.Cookie{Name: "hfproxy_session", Value: token, Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: int(s.currentConfig().SessionAbsoluteTTL.Seconds())})
-	http.SetCookie(w, &http.Cookie{Name: "hfproxy_csrf", Value: csrf, Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: int(s.currentConfig().SessionIdleTTL.Seconds())})
+	for _, cookie := range newSessionCookies(token, csrf, s.currentConfig()) {
+		http.SetCookie(w, cookie)
+	}
 	return csrf, nil
+}
+
+func newSessionCookies(token, csrf string, cfg config.Config) []*http.Cookie {
+	secure := strings.HasPrefix(cfg.PublicURL, "https://") || strings.HasPrefix(cfg.OIDCRedirectURL, "https://")
+	maxAge := int(cfg.SessionAbsoluteTTL.Seconds())
+	return []*http.Cookie{
+		{Name: "hfproxy_session", Value: token, Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: maxAge},
+		{Name: "hfproxy_csrf", Value: csrf, Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: maxAge},
+	}
 }
 
 func (s *Server) checkCSRF(r *http.Request) bool {
