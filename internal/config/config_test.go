@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestNormalizeAllowedHosts(t *testing.T) {
 	got, err := NormalizeAllowedHosts([]string{" *.HF.co. ", "HF.co"})
@@ -14,6 +18,17 @@ func TestNormalizeAllowedHosts(t *testing.T) {
 		if _, err := NormalizeAllowedHosts([]string{value}); err == nil {
 			t.Errorf("NormalizeAllowedHosts(%q) accepted invalid host", value)
 		}
+	}
+}
+
+func TestIssue93RejectsEmptySecretFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "hf-proxy-url")
+	if err := os.WriteFile(file, []byte("\n\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HFPROXY_HF_PROXY_URL_FILE", file)
+	if err := validateEnvironmentOverrides(); err == nil {
+		t.Fatal("empty secret file was accepted")
 	}
 }
 

@@ -241,8 +241,12 @@ func validateEnvironmentOverrides() error {
 		"OIDC_CLIENT_SECRET", "LDAP_BIND_PASSWORD", "OIDC_CLIENT_SECRET",
 	} {
 		if file := os.Getenv("HFPROXY_" + key + "_FILE"); file != "" {
-			if _, err := os.ReadFile(file); err != nil {
+			data, err := os.ReadFile(file)
+			if err != nil {
 				return fmt.Errorf("HFPROXY_%s_FILE cannot be read: %w", key, err)
+			}
+			if strings.TrimSpace(string(data)) == "" {
+				return fmt.Errorf("HFPROXY_%s_FILE must not be empty", key)
 			}
 		}
 	}
