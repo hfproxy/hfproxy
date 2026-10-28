@@ -468,8 +468,12 @@ func (s *Server) loginClientIP(r *http.Request) string {
 		return remoteHost
 	}
 	remote = remote.Unmap()
+	state := s.runtime.Load()
 	trusted := func(ip netip.Addr) bool {
-		for _, prefix := range s.currentConfig().TrustedProxies {
+		if state == nil {
+			return false
+		}
+		for _, prefix := range state.config.TrustedProxies {
 			if prefix.Contains(ip) {
 				return true
 			}
