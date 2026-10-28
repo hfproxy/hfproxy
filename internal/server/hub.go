@@ -50,6 +50,13 @@ func cachePublishContext(parent context.Context) (context.Context, context.Cance
 	return context.WithTimeout(context.WithoutCancel(parent), 30*time.Minute)
 }
 
+func writeStreamAwareProblem(w http.ResponseWriter, r *http.Request, streamed bool, status int, title, detail string) {
+	if streamed {
+		panic(http.ErrAbortHandler)
+	}
+	writeProblem(w, r, status, title, detail)
+}
+
 type resolvePath struct{ RepoType, RepoID, Revision, FilePath string }
 
 type downloadProgressWriter struct {
@@ -354,12 +361,12 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		size, err = io.Copy(progress, limited)
 		if err != nil {
 			s.finishDownload(r.Context(), downloadID, size, "upstream_read")
-			writeProblem(w, r, 502, "Upstream transfer failed", "The Hub response could not be completely downloaded.")
+			writeStreamAwareProblem(w, r, streamed, 502, "Upstream transfer failed", "The Hub response could not be completely downloaded.")
 			return
 		}
 		if size > s.currentConfig().CacheMaxFileSize {
 			s.finishDownload(r.Context(), downloadID, size, "size_limit")
-			writeProblem(w, r, 413, "File too large", "The upstream file exceeds the configured cache file limit.")
+			writeStreamAwareProblem(w, r, streamed, 413, "File too large", "The upstream file exceeds the configured cache file limit.")
 			return
 		}
 		digest = hex.EncodeToString(hash.Sum(nil))
@@ -390,7 +397,7 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	if resume == nil {
 		if err := tmp.Sync(); err != nil {
 			s.finishDownload(publishCtx, downloadID, size, "staging")
-			writeProblem(w, r, 500, "Cache error", "Unable to finalize the staged file.")
+			writeStreamAwareProblem(w, r, streamed, 500, "Cache error", "Unable to finalize the staged file.")
 			return
 		}
 	}
@@ -400,20 +407,20 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	var blobExists bool
 	if err = s.db.SQL.QueryRowContext(publishCtx, `SELECT EXISTS(SELECT 1 FROM blobs WHERE sha256=$1)`, digest).Scan(&blobExists); err != nil {
 		s.finishDownload(publishCtx, downloadID, size, "metadata")
-		writeProblem(w, r, 500, "Cache metadata error", "Unable to check blob metadata.")
+		writeStreamAwareProblem(w, r, streamed, 500, "Cache metadata error", "Unable to check blob metadata.")
 		return
 	}
 	if !blobExists {
 		if err := objectStore.UploadFile(publishCtx, tmp, key, contentType, size); err != nil {
 			s.finishDownload(publishCtx, downloadID, size, "storage")
-			writeProblem(w, r, 502, "Storage error", "The downloaded file could not be published to object storage.")
+			writeStreamAwareProblem(w, r, streamed, 502, "Storage error", "The downloaded file could not be published to object storage.")
 			return
 		}
 	}
 	tx, err = s.db.SQL.BeginTx(publishCtx, nil)
 	if err != nil {
 		s.finishDownload(publishCtx, downloadID, size, "metadata")
-		writeProblem(w, r, 500, "Cache metadata error", "Unable to open cache metadata transaction.")
+		writeStreamAwareProblem(w, r, streamed, 500, "Cache metadata error", "Unable to open cache metadata transaction.")
 		return
 	}
 	var blobID, existingKey string
@@ -422,19 +429,19 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		err = tx.QueryRowContext(publishCtx, `INSERT INTO blobs(id,sha256,size_bytes,storage_key,content_type,verified_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(sha256) DO UPDATE SET orphaned_at=NULL RETURNING id,storage_key`, db.NewID(), digest, size, key, contentType).Scan(&blobID, &existingKey)
 		if err != nil {
 			s.finishDownload(publishCtx, downloadID, size, "metadata")
-			writeProblem(w, r, 500, "Cache metadata error", "Unable to publish cache metadata.")
+			writeStreamAwareProblem(w, r, streamed, 500, "Cache metadata error", "Unable to publish cache metadata.")
 			return
 		}
 		key = existingKey
 	} else if err != nil {
 		s.finishDownload(publishCtx, downloadID, size, "metadata")
-		writeProblem(w, r, 500, "Cache metadata error", "Unable to read blob metadata.")
+		writeStreamAwareProblem(w, r, streamed, 500, "Cache metadata error", "Unable to read blob metadata.")
 		return
 	} else {
 		key = existingKey
 		if _, err = tx.ExecContext(publishCtx, `UPDATE blobs SET orphaned_at=NULL WHERE id=$1`, blobID); err != nil {
 			s.finishDownload(publishCtx, downloadID, size, "metadata")
-			writeProblem(w, r, 500, "Cache metadata error", "Unable to restore cache metadata.")
+			writeStreamAwareProblem(w, r, streamed, 500, "Cache metadata error", "Unable to restore cache metadata.")
 			return
 		}
 	}
@@ -454,12 +461,12 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	if _, err = tx.ExecContext(publishCtx, `INSERT INTO artifacts(id,repository_id,commit_sha,path,blob_id,etag,last_modified,upstream_size) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
 		ON CONFLICT(repository_id,commit_sha,path) DO UPDATE SET blob_id=EXCLUDED.blob_id,etag=EXCLUDED.etag,last_modified=EXCLUDED.last_modified,upstream_size=EXCLUDED.upstream_size,cached_at=now(),last_accessed_at=now()`, artifactID, repoPK, commit, parsed.FilePath, blobID, meta.ETag, nullTime(meta.LastMod), size); err != nil {
 		s.finishDownload(publishCtx, downloadID, size, "metadata")
-		writeProblem(w, r, 500, "Cache metadata error", "Unable to publish artifact metadata.")
+		writeStreamAwareProblem(w, r, streamed, 500, "Cache metadata error", "Unable to publish artifact metadata.")
 		return
 	}
 	if err = tx.Commit(); err != nil {
 		s.finishDownload(publishCtx, downloadID, size, "metadata")
-		writeProblem(w, r, 500, "Cache metadata error", "Unable to commit artifact metadata.")
+		writeStreamAwareProblem(w, r, streamed, 500, "Cache metadata error", "Unable to commit artifact metadata.")
 		return
 	}
 	if resume != nil {
