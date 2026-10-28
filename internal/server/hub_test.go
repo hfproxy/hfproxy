@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"io"
 	"net/http/httptest"
@@ -9,6 +10,18 @@ import (
 	"testing"
 	"time"
 )
+
+func TestIssue105CachePublishContextOutlivesClientContext(t *testing.T) {
+	clientCtx, cancelClient := context.WithCancel(context.Background())
+	publishCtx, cancelPublish := cachePublishContext(clientCtx)
+	defer cancelPublish()
+	cancelClient()
+	select {
+	case <-publishCtx.Done():
+		t.Fatalf("cache publish context canceled with client: %v", publishCtx.Err())
+	default:
+	}
+}
 
 func TestParseResolvePath(t *testing.T) {
 	tests := []struct {

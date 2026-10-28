@@ -46,6 +46,10 @@ func shouldStreamCacheMiss(r *http.Request, expectedLFS string) bool {
 		r.Header.Get("If-None-Match") == "" && r.Header.Get("If-Modified-Since") == ""
 }
 
+func cachePublishContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), 30*time.Minute)
+}
+
 type resolvePath struct{ RepoType, RepoID, Revision, FilePath string }
 
 type downloadProgressWriter struct {
@@ -379,9 +383,13 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
+	// Once the upstream body is complete, cache publication belongs to the
+	// proxy even if the client closes its connection after receiving the body.
+	publishCtx, cancelPublish := cachePublishContext(r.Context())
+	defer cancelPublish()
 	if resume == nil {
 		if err := tmp.Sync(); err != nil {
-			s.finishDownload(r.Context(), downloadID, size, "staging")
+			s.finishDownload(publishCtx, downloadID, size, "staging")
 			writeProblem(w, r, 500, "Cache error", "Unable to finalize the staged file.")
 			return
 		}
@@ -390,42 +398,42 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	// reserves a pool connection, and slow uploads can exhaust the pool while
 	// their progress writers need connections of their own.
 	var blobExists bool
-	if err = s.db.SQL.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM blobs WHERE sha256=$1)`, digest).Scan(&blobExists); err != nil {
-		s.finishDownload(r.Context(), downloadID, size, "metadata")
+	if err = s.db.SQL.QueryRowContext(publishCtx, `SELECT EXISTS(SELECT 1 FROM blobs WHERE sha256=$1)`, digest).Scan(&blobExists); err != nil {
+		s.finishDownload(publishCtx, downloadID, size, "metadata")
 		writeProblem(w, r, 500, "Cache metadata error", "Unable to check blob metadata.")
 		return
 	}
 	if !blobExists {
-		if err := objectStore.UploadFile(r.Context(), tmp, key, contentType, size); err != nil {
-			s.finishDownload(r.Context(), downloadID, size, "storage")
+		if err := objectStore.UploadFile(publishCtx, tmp, key, contentType, size); err != nil {
+			s.finishDownload(publishCtx, downloadID, size, "storage")
 			writeProblem(w, r, 502, "Storage error", "The downloaded file could not be published to object storage.")
 			return
 		}
 	}
-	tx, err = s.db.SQL.BeginTx(r.Context(), nil)
+	tx, err = s.db.SQL.BeginTx(publishCtx, nil)
 	if err != nil {
-		s.finishDownload(r.Context(), downloadID, size, "metadata")
+		s.finishDownload(publishCtx, downloadID, size, "metadata")
 		writeProblem(w, r, 500, "Cache metadata error", "Unable to open cache metadata transaction.")
 		return
 	}
 	var blobID, existingKey string
-	err = tx.QueryRowContext(r.Context(), `SELECT id,storage_key FROM blobs WHERE sha256=$1 FOR UPDATE`, digest).Scan(&blobID, &existingKey)
+	err = tx.QueryRowContext(publishCtx, `SELECT id,storage_key FROM blobs WHERE sha256=$1 FOR UPDATE`, digest).Scan(&blobID, &existingKey)
 	if err == sql.ErrNoRows {
-		err = tx.QueryRowContext(r.Context(), `INSERT INTO blobs(id,sha256,size_bytes,storage_key,content_type,verified_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(sha256) DO UPDATE SET orphaned_at=NULL RETURNING id,storage_key`, db.NewID(), digest, size, key, contentType).Scan(&blobID, &existingKey)
+		err = tx.QueryRowContext(publishCtx, `INSERT INTO blobs(id,sha256,size_bytes,storage_key,content_type,verified_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(sha256) DO UPDATE SET orphaned_at=NULL RETURNING id,storage_key`, db.NewID(), digest, size, key, contentType).Scan(&blobID, &existingKey)
 		if err != nil {
-			s.finishDownload(r.Context(), downloadID, size, "metadata")
+			s.finishDownload(publishCtx, downloadID, size, "metadata")
 			writeProblem(w, r, 500, "Cache metadata error", "Unable to publish cache metadata.")
 			return
 		}
 		key = existingKey
 	} else if err != nil {
-		s.finishDownload(r.Context(), downloadID, size, "metadata")
+		s.finishDownload(publishCtx, downloadID, size, "metadata")
 		writeProblem(w, r, 500, "Cache metadata error", "Unable to read blob metadata.")
 		return
 	} else {
 		key = existingKey
-		if _, err = tx.ExecContext(r.Context(), `UPDATE blobs SET orphaned_at=NULL WHERE id=$1`, blobID); err != nil {
-			s.finishDownload(r.Context(), downloadID, size, "metadata")
+		if _, err = tx.ExecContext(publishCtx, `UPDATE blobs SET orphaned_at=NULL WHERE id=$1`, blobID); err != nil {
+			s.finishDownload(publishCtx, downloadID, size, "metadata")
 			writeProblem(w, r, 500, "Cache metadata error", "Unable to restore cache metadata.")
 			return
 		}
@@ -443,14 +451,14 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	artifactID := db.NewID()
-	if _, err = tx.ExecContext(r.Context(), `INSERT INTO artifacts(id,repository_id,commit_sha,path,blob_id,etag,last_modified,upstream_size) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+	if _, err = tx.ExecContext(publishCtx, `INSERT INTO artifacts(id,repository_id,commit_sha,path,blob_id,etag,last_modified,upstream_size) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
 		ON CONFLICT(repository_id,commit_sha,path) DO UPDATE SET blob_id=EXCLUDED.blob_id,etag=EXCLUDED.etag,last_modified=EXCLUDED.last_modified,upstream_size=EXCLUDED.upstream_size,cached_at=now(),last_accessed_at=now()`, artifactID, repoPK, commit, parsed.FilePath, blobID, meta.ETag, nullTime(meta.LastMod), size); err != nil {
-		s.finishDownload(r.Context(), downloadID, size, "metadata")
+		s.finishDownload(publishCtx, downloadID, size, "metadata")
 		writeProblem(w, r, 500, "Cache metadata error", "Unable to publish artifact metadata.")
 		return
 	}
 	if err = tx.Commit(); err != nil {
-		s.finishDownload(r.Context(), downloadID, size, "metadata")
+		s.finishDownload(publishCtx, downloadID, size, "metadata")
 		writeProblem(w, r, 500, "Cache metadata error", "Unable to commit artifact metadata.")
 		return
 	}
@@ -459,11 +467,11 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		s.finishDownloadResume(cleanupCtx, objectStore, resume)
 		cancel()
 	}
-	s.finishDownload(r.Context(), downloadID, size, "")
+	s.finishDownload(publishCtx, downloadID, size, "")
 	if streamed {
 		return
 	}
-	cached, err = s.findArtifact(r.Context(), s.db.SQL, repoPK, commit, parsed.FilePath)
+	cached, err = s.findArtifact(publishCtx, s.db.SQL, repoPK, commit, parsed.FilePath)
 	if err != nil {
 		writeProblem(w, r, 500, "Cache metadata error", "The artifact was stored but could not be read back.")
 		return
