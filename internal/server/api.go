@@ -868,6 +868,16 @@ func (s *Server) apiCacheEntry(w http.ResponseWriter, r *http.Request, id string
 	if !ok {
 		return
 	}
+	visibility := `($2='admin' OR r.access_policy='public' OR (r.access_policy='allowlist' AND (EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$3) OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$3))))`
+	var visible bool
+	if err := s.db.SQL.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE a.id=$1 AND `+visibility+`)`, id, p.Role, p.ID).Scan(&visible); err != nil {
+		writeProblem(w, r, 500, "Database error", "Unable to check cache entry visibility.")
+		return
+	}
+	if !visible {
+		writeProblem(w, r, 404, "Cache entry not found", "The cache entry does not exist.")
+		return
+	}
 	if err := s.purgeArtifact(r.Context(), id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeProblem(w, r, 404, "Cache entry not found", "The cache entry does not exist.")
@@ -893,9 +903,10 @@ func (s *Server) apiPurge(w http.ResponseWriter, r *http.Request) {
 	confirm := r.URL.Query().Get("confirm") == "true" || r.FormValue("confirm") == "true"
 	repoID := r.URL.Query().Get("repo_id")
 	path := r.URL.Query().Get("path")
+	visibility := `r.deleted_at IS NULL AND ($3='admin' OR r.access_policy='public' OR (r.access_policy='allowlist' AND (EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$4) OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$4))))`
 	var count int64
 	var size int64
-	err := s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0)`, repoID, path).Scan(&count, &size)
+	err := s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0) AND `+visibility, repoID, path, p.Role, p.ID).Scan(&count, &size)
 	if err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to estimate purge impact.")
 		return
@@ -904,7 +915,7 @@ func (s *Server) apiPurge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"dry_run": true, "entries": count, "bytes": size, "size": formatBytes(size), "confirmation_required": true})
 		return
 	}
-	rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT a.id FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0)`, repoID, path)
+	rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT a.id FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0) AND `+visibility, repoID, path, p.Role, p.ID)
 	if err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to find cache entries.")
 		return
