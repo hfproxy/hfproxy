@@ -616,6 +616,7 @@ func lfsSHA256(value string) string {
 	}
 	return strings.ToLower(value)
 }
+
 func hasControl(value string) bool {
 	for _, r := range value {
 		if r < 0x20 || r == 0x7f {
