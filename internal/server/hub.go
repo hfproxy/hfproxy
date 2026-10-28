@@ -406,6 +406,11 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	} else {
 		key = existingKey
+		if _, err = tx.ExecContext(r.Context(), `UPDATE blobs SET orphaned_at=NULL WHERE id=$1`, blobID); err != nil {
+			s.finishDownload(r.Context(), downloadID, size, "metadata")
+			writeProblem(w, r, 500, "Cache metadata error", "Unable to restore cache metadata.")
+			return
+		}
 	}
 	meta.Size = size
 	meta.ContentType = contentType
