@@ -40,6 +40,10 @@ type upstreamStatusError struct {
 	header http.Header
 }
 
+func resumeRestartWouldCorruptResponse(stream io.Writer, alreadySent int64) bool {
+	return stream != nil && alreadySent > 0
+}
+
 func (e *upstreamStatusError) Error() string {
 	return fmt.Sprintf("Hugging Face returned HTTP %d while downloading a file", e.status)
 }
@@ -79,9 +83,14 @@ func (s *Server) downloadResumable(ctx context.Context, objectStore *storage.S3,
 
 		if response.StatusCode == http.StatusOK {
 			if start > 0 || (resume.ETag != "" && responseETag != "" && resume.ETag != responseETag) {
+				streamedPrefix := resumeRestartWouldCorruptResponse(stream, start)
 				if err := s.resetDownloadResume(ctx, objectStore, resume, responseETag, resume.TotalSize, resume.ContentType); err != nil {
 					response.Body.Close()
 					return nil, "", resume, err
+				}
+				if streamedPrefix {
+					response.Body.Close()
+					return nil, "", resume, fmt.Errorf("upstream restarted after response streaming began")
 				}
 			}
 			if response.ContentLength >= 0 && response.ContentLength != resume.TotalSize {
@@ -109,8 +118,12 @@ func (s *Server) downloadResumable(ctx context.Context, objectStore *storage.S3,
 
 		if resume.ETag != "" && responseETag != "" && resume.ETag != responseETag {
 			response.Body.Close()
+			streamedPrefix := resumeRestartWouldCorruptResponse(stream, start)
 			if err := s.resetDownloadResume(ctx, objectStore, resume, responseETag, resume.TotalSize, resume.ContentType); err != nil {
 				return nil, "", resume, err
+			}
+			if streamedPrefix {
+				return nil, "", resume, fmt.Errorf("upstream validator changed after response streaming began")
 			}
 			continue
 		}
