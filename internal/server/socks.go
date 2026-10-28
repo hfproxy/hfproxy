@@ -270,7 +270,14 @@ func egressIPAllowed(ip netip.Addr, allowLoopback bool) bool {
 		b := ip.As16()
 		return egressIPAllowed(netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), allowLoopback)
 	}
-	for _, blocked := range []string{"100.64.0.0/10", "198.18.0.0/15", "64:ff9b::/96"} {
+	for _, nat64 := range []string{"64:ff9b::/96", "64:ff9b:1::/48"} {
+		prefix, err := netip.ParsePrefix(nat64)
+		if err == nil && prefix.Contains(ip) {
+			bytes := ip.As16()
+			return egressIPAllowed(netip.AddrFrom4([4]byte{bytes[12], bytes[13], bytes[14], bytes[15]}), allowLoopback)
+		}
+	}
+	for _, blocked := range []string{"100.64.0.0/10", "198.18.0.0/15"} {
 		if prefix, err := netip.ParsePrefix(blocked); err == nil && prefix.Contains(ip) {
 			return false
 		}

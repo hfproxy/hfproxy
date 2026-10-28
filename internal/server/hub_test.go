@@ -176,7 +176,7 @@ func TestImmutableAssetRequiresHash(t *testing.T) {
 }
 
 func TestEgressIPPolicyRejectsSpecialAndEmbeddedPrivateIPs(t *testing.T) {
-	for _, value := range []string{"100.100.100.200", "198.18.0.1", "64:ff9b::c000:0201", "2002:0a00:0001::1"} {
+	for _, value := range []string{"100.100.100.200", "198.18.0.1", "64:ff9b::a00:1", "2002:0a00:0001::1"} {
 		ip, err := netip.ParseAddr(value)
 		if err != nil {
 			t.Fatal(err)
@@ -184,6 +184,17 @@ func TestEgressIPPolicyRejectsSpecialAndEmbeddedPrivateIPs(t *testing.T) {
 		if egressIPAllowed(ip, false) {
 			t.Errorf("egressIPAllowed(%s) accepted a blocked destination", value)
 		}
+	}
+}
+
+func TestIssue76NAT64UnwrapsAndRechecksEmbeddedIPv4(t *testing.T) {
+	for _, raw := range []string{"64:ff9b:1::a00:1", "64:ff9b:1::a9fe:a9fe", "64:ff9b:1::7f00:1"} {
+		if egressIPAllowed(netip.MustParseAddr(raw), false) {
+			t.Errorf("local-use NAT64 address %s wraps a blocked IPv4 destination", raw)
+		}
+	}
+	if !egressIPAllowed(netip.MustParseAddr("64:ff9b::d21:2121"), false) {
+		t.Fatal("well-known NAT64 address wrapping public IPv4 13.33.33.33 was rejected")
 	}
 }
 
