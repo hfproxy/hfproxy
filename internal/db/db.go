@@ -40,14 +40,14 @@ func Migrate(ctx context.Context, sqlDB *sql.DB) error {
 		return fmt.Errorf("start migration transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('hfproxy:schema-migrations'))`); err != nil {
+		return fmt.Errorf("lock migrations: %w", err)
+	}
 	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version BIGINT PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 	)`); err != nil {
 		return fmt.Errorf("create migration table: %w", err)
-	}
-	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('hfproxy:schema-migrations'))`); err != nil {
-		return fmt.Errorf("lock migrations: %w", err)
 	}
 	var version int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
