@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/netip"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 )
