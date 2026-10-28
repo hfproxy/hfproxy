@@ -868,7 +868,7 @@ func (s *Server) apiCacheEntry(w http.ResponseWriter, r *http.Request, id string
 	if !ok {
 		return
 	}
-	visibility := `($2='admin' OR r.access_policy='public' OR (r.access_policy='allowlist' AND (EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$3) OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$3))))`
+	visibility := `r.deleted_at IS NULL AND ($2='admin' OR r.access_policy='public' OR (r.access_policy='allowlist' AND (EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$3) OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$3))))`
 	var visible bool
 	if err := s.db.SQL.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE a.id=$1 AND `+visibility+`)`, id, p.Role, p.ID).Scan(&visible); err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to check cache entry visibility.")
