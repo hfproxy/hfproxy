@@ -207,6 +207,37 @@ func TestIdleBodyClosesAStalledRead(t *testing.T) {
 	}
 }
 
+func TestIdleBodyDoesNotTimeOutBetweenReads(t *testing.T) {
+	reader, writer := io.Pipe()
+	body := newIdleBody(reader, 10*time.Millisecond)
+	defer writer.Close()
+	defer body.Close()
+	firstWrite := make(chan error, 1)
+	go func() {
+		_, err := writer.Write([]byte("a"))
+		firstWrite <- err
+	}()
+	buf := make([]byte, 1)
+	if n, err := body.Read(buf); err != nil || n != 1 || buf[0] != 'a' {
+		t.Fatalf("first read = %q, %v", buf[:n], err)
+	}
+	if err := <-firstWrite; err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond) // Downstream/client delay is not upstream idleness.
+	secondWrite := make(chan error, 1)
+	go func() {
+		_, err := writer.Write([]byte("b"))
+		secondWrite <- err
+	}()
+	if n, err := body.Read(buf); err != nil || n != 1 || buf[0] != 'b' {
+		t.Fatalf("second read after client delay = %q, %v", buf[:n], err)
+	}
+	if err := <-secondWrite; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestValidRepoID(t *testing.T) {
 	tests := []struct {
 		value string

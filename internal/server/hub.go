@@ -832,11 +832,18 @@ func (b *idleBody) resetTimer() {
 	}
 }
 
+func (b *idleBody) stopTimer() {
+	b.mu.Lock()
+	if b.timer != nil {
+		b.timer.Stop()
+	}
+	b.mu.Unlock()
+}
+
 func (b *idleBody) Read(p []byte) (int, error) {
 	b.resetTimer()
-	n, err := b.body.Read(p)
-	b.resetTimer()
-	return n, err
+	defer b.stopTimer()
+	return b.body.Read(p)
 }
 
 func (b *idleBody) Close() error {
