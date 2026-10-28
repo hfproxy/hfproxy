@@ -280,9 +280,6 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 			writeProblem(w, r, http.StatusBadGateway, "Upstream transfer failed", "The file could not be completed. Retry the preload to continue from the last stored block.")
 			return
 		}
-		if resume.ETag != "" {
-			meta.ETag = resume.ETag
-		}
 		defer func() {
 			name := tmp.Name()
 			_ = tmp.Close()
