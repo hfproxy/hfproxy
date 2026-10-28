@@ -1,0 +1,158 @@
+<app-page-heading
+  title="Access tokens"
+  subtitle="Connect scripts and download tools to hfproxy using your own credentials."
+  eyebrow="Your account"
+/>
+
+@if (secret()) {
+  <section role="status" class="mb-6 rounded-2xl border border-amber-200 bg-amber-50 p-6">
+    <h2 class="text-sm font-semibold text-amber-950">Save your new token</h2>
+    <p class="mt-2 text-sm text-amber-900">
+      This secret is shown only once. Copy it now and keep it somewhere safe.
+    </p>
+    <label class="mt-4 block text-xs font-semibold text-amber-950" for="new-token"
+      >New access token</label
+    >
+    <input
+      id="new-token"
+      class="mt-2 w-full rounded-lg border border-amber-300 bg-white px-3 py-3 font-mono text-sm"
+      readonly
+      [value]="secret()"
+      (focus)="$any($event.target).select()"
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <button
+      type="button"
+      (click)="secret.set('')"
+      class="mt-4 rounded-lg bg-amber-900 px-4 py-2 text-xs font-semibold text-white"
+    >
+      I have saved my token
+    </button>
+  </section>
+}
+
+<section class="mb-6 rounded-2xl border border-slate-200 bg-white p-6">
+  <h2 class="text-sm font-semibold text-slate-900">Create an access token</h2>
+  <p class="mt-2 text-sm text-slate-500">
+    Tokens created here are read-only and can download from repositories your account is allowed to
+    access.
+  </p>
+  <form
+    #tokenForm="ngForm"
+    (ngSubmit)="tokenForm.valid && create()"
+    class="mt-5 flex flex-wrap items-end gap-4"
+  >
+    <label class="flex-1 text-xs font-semibold text-slate-600"
+      >Name
+      <input
+        name="tokenName"
+        [(ngModel)]="draft.name"
+        required
+        maxlength="100"
+        placeholder="Workstation or training job"
+        class="mt-2 block w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm"
+      />
+    </label>
+    <label class="text-xs font-semibold text-slate-600"
+      >Expires in
+      <select
+        name="expiration"
+        [(ngModel)]="draft.expires_in_days"
+        class="mt-2 block rounded-xl border border-slate-200 px-3 py-2.5 text-sm"
+      >
+        <option [ngValue]="7">7 days</option>
+        <option [ngValue]="30">30 days</option>
+        <option [ngValue]="90">90 days</option>
+        <option [ngValue]="365">1 year</option>
+      </select>
+    </label>
+    <button
+      type="submit"
+      [disabled]="busy() || loading() || !!secret() || !tokenForm.valid || !draft.name.trim()"
+      class="rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+    >
+      Create token
+    </button>
+  </form>
+  <p class="mt-4 text-xs leading-6 text-slate-500">
+    Use the token as <code>HF_TOKEN</code> with <code>HF_ENDPOINT</code> set to this hfproxy
+    instance, or send it in an <code>Authorization: Bearer</code> header.
+  </p>
+</section>
+
+<section class="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+  <h2 class="border-b border-slate-100 px-6 py-4 text-sm font-semibold">Your tokens</h2>
+  @if (loading()) {
+    <p class="p-6 text-sm text-slate-500">Loading tokens…</p>
+  } @else {
+    <div class="overflow-x-auto">
+      <table class="w-full text-left text-sm">
+        <thead class="bg-slate-50 text-xs text-slate-500">
+          <tr>
+            <th class="p-4">Token</th>
+            <th class="p-4">Scope</th>
+            <th class="p-4">Expires</th>
+            <th class="p-4">Last used</th>
+            <th class="p-4">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (token of tokens(); track token.id) {
+            <tr class="border-t border-slate-100">
+              <td class="p-4">
+                <div class="font-semibold">{{ token.name || 'Unnamed token' }}</div>
+                <code class="text-xs text-slate-500">{{ token.prefix }}…</code>
+              </td>
+              <td class="p-4">{{ token.scopes.join(', ') }}</td>
+              <td class="p-4">
+                {{ token.expires_at ? (token.expires_at | date: 'mediumDate') : 'Never' }}
+                @if (expired(token)) {
+                  <span class="text-rose-700">(expired)</span>
+                }
+              </td>
+              <td class="p-4">
+                {{ token.last_used_at ? (token.last_used_at | date: 'medium') : 'Never' }}
+              </td>
+              <td class="p-4">
+                @if (confirming() === token.id) {
+                  <button
+                    type="button"
+                    [disabled]="busy()"
+                    (click)="revoke(token)"
+                    class="rounded-lg bg-rose-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                  >
+                    Confirm revocation
+                  </button>
+                  <button
+                    type="button"
+                    [disabled]="busy()"
+                    (click)="confirming.set('')"
+                    class="ml-2 text-xs"
+                  >
+                    Cancel
+                  </button>
+                } @else {
+                  <button
+                    type="button"
+                    [disabled]="busy()"
+                    (click)="confirming.set(token.id)"
+                    class="rounded-lg border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 disabled:opacity-50"
+                  >
+                    Revoke
+                  </button>
+                }
+              </td>
+            </tr>
+          } @empty {
+            <tr>
+              <td colspan="5" class="p-8 text-center text-slate-500">
+                You have no access tokens. Create one to connect your tools.
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  }
+</section>

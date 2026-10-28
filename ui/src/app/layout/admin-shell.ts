@@ -10,6 +10,7 @@ interface NavItem {
   path: string;
   label: string;
   icon: string;
+  personal?: boolean;
 }
 
 @Component({
@@ -25,7 +26,8 @@ export class AdminShellComponent {
   protected readonly path = signal('/overview');
 
   protected readonly navItems: NavItem[] = [
-    { path: '/overview', label: 'Overview', icon: 'grid' },
+    { path: '/overview', label: 'Overview', icon: 'grid', personal: true },
+    { path: '/tokens', label: 'Access tokens', icon: 'shield', personal: true },
     { path: '/repositories', label: 'Repositories', icon: 'box' },
     { path: '/cache', label: 'Cache', icon: 'database' },
     { path: '/users', label: 'Users', icon: 'users' },
@@ -43,7 +45,9 @@ export class AdminShellComponent {
   }
 
   protected get visibleNavItems(): NavItem[] {
-    return this.auth.principal()?.role === 'admin' ? this.navItems : this.navItems.slice(0, 1);
+    return this.auth.principal()?.role === 'admin'
+      ? this.navItems
+      : this.navItems.filter((item) => item.personal);
   }
 
   protected get currentTitle(): string {

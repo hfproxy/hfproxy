@@ -56,6 +56,8 @@ Open http://localhost:8080 and sign in. The overview shows the cache, policies, 
 
     docker compose exec hfproxy hfproxy admin token create --username admin --name laptop
 
+Signed-in users can also open **Access tokens** in the web interface to create a personal read-only token, view its expiration and last use, and revoke it. Choose an expiration of 7, 30, 90, or 365 days. The full secret is shown only once and is stored as a keyed hash. Token management requires a browser session with CSRF validation; bearer tokens cannot issue other credentials. These tokens use the owner's existing repository permissions.
+
 Tokens default to the `read` scope. For an administrator token that can call write endpoints, use `--scope write`; use `--scope admin` only when the owner is an administrator. Operators can create `read` or `write` tokens, while readers can create only `read` tokens.
 
 Then configure a Python client:

@@ -8,6 +8,7 @@ import { OverviewPageComponent } from './features/overview/overview-page';
 import { RepositoriesPageComponent } from './features/repositories/repositories-page';
 import { SettingsPageComponent } from './features/settings/settings-page';
 import { UsersPageComponent } from './features/users/users-page';
+import { TokensPageComponent } from './features/tokens/tokens-page';
 import { AdminShellComponent } from './layout/admin-shell';
 
 const adminOnly: CanActivateFn = async () => {
@@ -24,6 +25,7 @@ export const routes: Routes = [
     children: [
       { path: '', pathMatch: 'full', redirectTo: 'overview' },
       { path: 'overview', component: OverviewPageComponent },
+      { path: 'tokens', component: TokensPageComponent },
       { path: 'repositories', component: RepositoriesPageComponent, canActivate: [adminOnly] },
       { path: 'cache', component: CachePageComponent, canActivate: [adminOnly] },
       { path: 'users', component: UsersPageComponent, canActivate: [adminOnly] },

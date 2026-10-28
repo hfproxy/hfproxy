@@ -31,6 +31,10 @@ func (s *Server) apiV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/")
+	if path == "me/tokens" || strings.HasPrefix(path, "me/tokens/") {
+		s.apiPersonalTokens(w, r, strings.TrimPrefix(path, "me/tokens"))
+		return
+	}
 	if isMutation(r.Method) && hasBearer(r) {
 		p, err := s.authenticate(r)
 		if err != nil {
