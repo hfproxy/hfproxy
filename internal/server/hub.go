@@ -24,6 +24,7 @@ import (
 
 	"github.com/nicolas/hfproxy/internal/config"
 	"github.com/nicolas/hfproxy/internal/db"
+	"github.com/nicolas/hfproxy/internal/storage"
 )
 
 type artifact struct {
@@ -439,6 +440,18 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	} else {
 		key = existingKey
+		if _, headErr := objectStore.Head(publishCtx, key); headErr != nil {
+			if !storage.IsNotFound(headErr) {
+				s.finishDownload(publishCtx, downloadID, size, "storage_check")
+				writeStreamAwareProblem(w, r, streamed, http.StatusBadGateway, "Storage error", "The existing cached object could not be checked.")
+				return
+			}
+			if err = objectStore.UploadFile(publishCtx, tmp, key, contentType, size); err != nil {
+				s.finishDownload(publishCtx, downloadID, size, "storage")
+				writeStreamAwareProblem(w, r, streamed, http.StatusBadGateway, "Storage error", "The missing cached object could not be restored.")
+				return
+			}
+		}
 		if _, err = tx.ExecContext(publishCtx, `UPDATE blobs SET orphaned_at=NULL WHERE id=$1`, blobID); err != nil {
 			s.finishDownload(publishCtx, downloadID, size, "metadata")
 			writeStreamAwareProblem(w, r, streamed, 500, "Cache metadata error", "Unable to restore cache metadata.")
