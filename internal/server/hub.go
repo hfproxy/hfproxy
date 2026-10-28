@@ -247,13 +247,14 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	var digest string
 	var resume *downloadResume
 	streamed := false
+	expectedLFS := lfsSHA256(firstHeaders.Get("X-Linked-ETag"))
 	if sizeKnown {
 		resumeETag := upstream.Header.Get("ETag")
 		if resumeETag == "" {
 			resumeETag = firstHeaders.Get("ETag")
 		}
 		var stream io.Writer
-		if r.Method == http.MethodGet && r.Header.Get("Range") == "" && r.Header.Get("If-Range") == "" && r.Header.Get("If-None-Match") == "" && r.Header.Get("If-Modified-Since") == "" {
+		if expectedLFS == "" && r.Method == http.MethodGet && r.Header.Get("Range") == "" && r.Header.Get("If-Range") == "" && r.Header.Get("If-None-Match") == "" && r.Header.Get("If-Modified-Since") == "" {
 			s.setArtifactHeaders(w, meta, firstHeaders)
 			w.Header().Set("X-Cache", "MISS")
 			w.Header().Set("X-Repo-Commit", commit)
@@ -329,7 +330,7 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		hash := sha256.New()
 		limited := io.LimitReader(body.Body, s.currentConfig().CacheMaxFileSize+1)
 		destination := io.Writer(io.MultiWriter(tmp, hash))
-		if r.Method == http.MethodGet && r.Header.Get("Range") == "" && r.Header.Get("If-Range") == "" && r.Header.Get("If-None-Match") == "" && r.Header.Get("If-Modified-Since") == "" {
+		if expectedLFS == "" && r.Method == http.MethodGet && r.Header.Get("Range") == "" && r.Header.Get("If-Range") == "" && r.Header.Get("If-None-Match") == "" && r.Header.Get("If-Modified-Since") == "" {
 			s.setArtifactHeaders(w, meta, headers)
 			w.Header().Set("X-Cache", "MISS")
 			w.Header().Set("X-Repo-Commit", commit)
@@ -354,7 +355,7 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		}
 		digest = hex.EncodeToString(hash.Sum(nil))
 	}
-	if expected := lfsSHA256(firstHeaders.Get("X-Linked-ETag")); expected != "" && digest != expected {
+	if expectedLFS != "" && digest != expectedLFS {
 		if resume != nil {
 			_ = s.resetDownloadResume(r.Context(), objectStore, resume, resume.ETag, resume.TotalSize, resume.ContentType)
 		}
