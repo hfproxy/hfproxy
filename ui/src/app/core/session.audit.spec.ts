@@ -59,6 +59,20 @@ describe('AuditUI session handling', () => {
     expect(auth.principal()).toBeNull();
   });
 
+  it('Issue94UI: an anonymous 401 does not report an expired session', async () => {
+    auth.principal.set(null);
+    const pending = api.get('/api/v1/users').catch(() => undefined);
+    http
+      .expectOne('/api/v1/users')
+      .flush(problem401, {
+        status: 401,
+        statusText: 'Unauthorized',
+        headers: { 'Content-Type': 'application/problem+json' },
+      });
+    await pending;
+    expect(auth.error()).toBe('');
+  });
+
   it('AuditUI: sign-out reports a failure when the server refuses to revoke the session', async () => {
     document.cookie = 'hfproxy_csrf=stale-token; path=/';
     const pending = auth.signOut();

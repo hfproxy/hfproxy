@@ -12,7 +12,8 @@ export const sessionInterceptor: HttpInterceptorFn = (req, next) => {
       if (
         error instanceof HttpErrorResponse &&
         error.status === 401 &&
-        req.url.includes('/api/v1/')
+        req.url.includes('/api/v1/') &&
+        auth.principal() !== null
       ) {
         auth.expireSession();
         void router.navigateByUrl('/login');
