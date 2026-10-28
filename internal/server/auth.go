@@ -90,9 +90,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		}
 		var storedHash, status string
 		authErr = s.db.SQL.QueryRowContext(r.Context(), `SELECT id,password_hash,status FROM users WHERE username=$1`, username).Scan(&userID, &storedHash, &status)
-		if authErr != nil {
-			_ = verifyPassword(dummyPasswordHash, password)
-		} else if status != "active" || !verifyPassword(storedHash, password) {
+		if !verifyPassword(localLoginHash(storedHash, status, authErr), password) {
 			authErr = sql.ErrNoRows
 		}
 	} else {
@@ -116,6 +114,13 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r.Context(), userID, "auth.login", "user", userID, map[string]any{"provider": provider})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func localLoginHash(storedHash, status string, lookupErr error) string {
+	if lookupErr != nil || status != "active" {
+		return dummyPasswordHash
+	}
+	return storedHash
 }
 
 func (s *Server) renderLogin(w http.ResponseWriter, data loginData, status int) {
