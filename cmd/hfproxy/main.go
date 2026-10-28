@@ -538,8 +538,14 @@ func cache(args []string) error {
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
+		operationCtx := ctx
+		if *execute && *yes {
+			var cancelOperation context.CancelFunc
+			operationCtx, cancelOperation = newCacheOperationContext()
+			defer cancelOperation()
+		}
 		var count, bytes int64
-		err = store.SQL.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0)`, *repo, *pathFilter).Scan(&count, &bytes)
+		err = store.SQL.QueryRowContext(operationCtx, `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0)`, *repo, *pathFilter).Scan(&count, &bytes)
 		if err != nil {
 			return err
 		}
@@ -551,7 +557,7 @@ func cache(args []string) error {
 		if !*yes {
 			return fmt.Errorf("purge requires both --execute and --yes")
 		}
-		rows, err := store.SQL.QueryContext(ctx, `SELECT a.id FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0)`, *repo, *pathFilter)
+		rows, err := store.SQL.QueryContext(operationCtx, `SELECT a.id FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0)`, *repo, *pathFilter)
 		if err != nil {
 			return err
 		}
@@ -564,13 +570,15 @@ func cache(args []string) error {
 		}
 		rows.Close()
 		for _, id := range ids {
-			if err := purgeCLI(ctx, store, objects, id); err != nil {
+			if err := purgeCLI(operationCtx, store, objects, id); err != nil {
 				return err
 			}
 		}
 		fmt.Printf("Purged %d entries.\n", len(ids))
 		return nil
 	case "verify":
+		operationCtx, cancelOperation := newCacheOperationContext()
+		defer cancelOperation()
 		checked, invalid := 0, 0
 		var cursorTime time.Time
 		var cursorID string
@@ -581,7 +589,7 @@ func cache(args []string) error {
 				query = `SELECT id,sha256,storage_key,size_bytes,created_at FROM blobs WHERE (created_at,id) > ($1,$2) ORDER BY created_at,id LIMIT 200`
 				args = []any{cursorTime, cursorID}
 			}
-			rows, err := store.SQL.QueryContext(ctx, query, args...)
+			rows, err := store.SQL.QueryContext(operationCtx, query, args...)
 			if err != nil {
 				return err
 			}
@@ -596,7 +604,7 @@ func cache(args []string) error {
 				}
 				cursorTime, cursorID = createdAt, id
 				pageCount++
-				objectCtx, objectCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				objectCtx, objectCancel := context.WithTimeout(operationCtx, 2*time.Minute)
 				out, err := objects.Get(objectCtx, key, "")
 				if err != nil {
 					objectCancel()
@@ -640,6 +648,9 @@ func cache(args []string) error {
 	}
 }
 
+func newCacheOperationContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
 func purgeCLI(ctx context.Context, store *db.Store, objects *storage.S3, id string) error {
 	tx, err := store.SQL.BeginTx(ctx, nil)
 	if err != nil {
