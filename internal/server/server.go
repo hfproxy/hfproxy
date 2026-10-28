@@ -24,7 +24,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-//go:embed dashboard.html
+//go:embed dashboard.html app.css
 var dashboardFS embed.FS
 
 //go:embed all:web
