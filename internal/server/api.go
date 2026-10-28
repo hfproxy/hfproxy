@@ -33,7 +33,12 @@ func (s *Server) apiV1(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/")
 	if isMutation(r.Method) && hasBearer(r) {
 		p, err := s.authenticate(r)
-		if err != nil || p.TokenID == "" || (!hasScope(p, "write") && !hasScope(p, "admin")) {
+		if err != nil {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="hfproxy"`)
+			writeProblem(w, r, http.StatusUnauthorized, "Authentication required", "A valid access token is required.")
+			return
+		}
+		if p.TokenID == "" || (!hasScope(p, "write") && !hasScope(p, "admin")) {
 			writeProblem(w, r, http.StatusForbidden, "Forbidden", "This token is read-only and cannot modify the administration API.")
 			return
 		}
