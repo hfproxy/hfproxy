@@ -21,6 +21,7 @@ export class RepositoriesPageComponent implements OnInit, OnDestroy {
   protected readonly loading = signal(true);
   protected readonly busy = signal(false);
   protected readonly repositories = signal<Repository[]>([]);
+  private readonly savedPolicies = new Map<string, Policy>();
   protected readonly preloading = signal<Record<string, boolean>>({});
   protected readonly preloadJobs = signal<PreloadJob[]>([]);
   protected readonly selectedRepo = signal<Repository | null>(null);
@@ -48,7 +49,10 @@ export class RepositoriesPageComponent implements OnInit, OnDestroy {
   protected async load(): Promise<void> {
     this.loading.set(true);
     try {
-      this.repositories.set(await this.api.listAll<Repository>('/api/v1/repos'));
+      const repositories = await this.api.listAll<Repository>('/api/v1/repos');
+      this.repositories.set(repositories);
+      this.savedPolicies.clear();
+      for (const repository of repositories) this.savedPolicies.set(repository.id, repository.access_policy);
     } catch (error) {
       this.feedback.showError(
         AdminApiService.errorMessage(error, 'Unable to load repository policies.'),
@@ -70,17 +74,21 @@ export class RepositoriesPageComponent implements OnInit, OnDestroy {
   }
 
   protected async savePolicy(repo: Repository): Promise<void> {
-    const previous = repo.access_policy;
+    const previous = this.savedPolicies.get(repo.id) ?? repo.access_policy;
     try {
       await this.mutate(async () => {
         await this.api.patch(`/api/v1/repos/${encodeURIComponent(repo.id)}`, {
           access_policy: repo.access_policy,
         });
+        this.savedPolicies.set(repo.id, repo.access_policy);
         this.feedback.showSuccess(`Access policy updated for ${repo.repo_id}.`);
         await this.load();
-      });
+      }, true);
     } catch (error) {
       repo.access_policy = previous;
+      this.repositories.update((items) =>
+        items.map((item) => (item.id === repo.id ? { ...item, access_policy: previous } : item)),
+      );
       this.feedback.showError(AdminApiService.errorMessage(error, 'Unable to update this policy.'));
     }
   }
@@ -220,12 +228,13 @@ export class RepositoriesPageComponent implements OnInit, OnDestroy {
     }
   }
 
-  private async mutate(action: () => Promise<void>): Promise<void> {
+  private async mutate(action: () => Promise<void>, propagateError = false): Promise<void> {
     this.busy.set(true);
     this.feedback.clear();
     try {
       await action();
     } catch (error) {
+      if (propagateError) throw error;
       this.feedback.showError(AdminApiService.errorMessage(error, 'The repository update failed.'));
     } finally {
       this.busy.set(false);
