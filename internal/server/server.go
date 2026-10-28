@@ -60,6 +60,8 @@ type loginBucket struct {
 	count  int
 }
 
+const loginRateLimitMaxBuckets = 10_000
+
 type negativeCacheEntry struct {
 	expires time.Time
 	status  int

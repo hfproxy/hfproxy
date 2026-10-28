@@ -426,6 +426,20 @@ func (s *Server) allowLoginAttempt(r *http.Request, username string) (int, bool)
 	if s.loginBuckets == nil {
 		s.loginBuckets = make(map[string]loginBucket)
 	}
+	for key, bucket := range s.loginBuckets {
+		if now.Sub(bucket.window) >= time.Minute {
+			delete(s.loginBuckets, key)
+		}
+	}
+	missing := 0
+	for _, key := range keys {
+		if _, exists := s.loginBuckets[key]; !exists {
+			missing++
+		}
+	}
+	if len(s.loginBuckets)+missing > loginRateLimitMaxBuckets {
+		return 60, false
+	}
 	for _, key := range keys {
 		bucket := s.loginBuckets[key]
 		if bucket.window.IsZero() || now.Sub(bucket.window) >= time.Minute {
