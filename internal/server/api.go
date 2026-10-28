@@ -452,10 +452,9 @@ func (s *Server) apiTestHub(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, "Invalid Hub settings", "Check the Hub URL.")
 		return
 	}
-	if cfg.HFToken != "" {
-		configuredBase, _ := url.Parse(s.currentConfig().HFBaseURL)
-		candidateBase, _ := url.Parse(cfg.HFBaseURL)
-		if configuredBase != nil && candidateBase != nil && strings.EqualFold(configuredBase.Hostname(), candidateBase.Hostname()) {
+	if cfg.HFToken != "" && !input.Clear {
+		explicitToken := strings.TrimSpace(input.Token) != ""
+		if explicitToken || sameURLOrigin(s.currentConfig().HFBaseURL, cfg.HFBaseURL) {
 			req.Header.Set("Authorization", "Bearer "+cfg.HFToken)
 		}
 	}
@@ -482,6 +481,28 @@ func (s *Server) apiTestHub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "huggingface"})
+}
+
+func sameURLOrigin(first, second string) bool {
+	a, errA := url.Parse(first)
+	b, errB := url.Parse(second)
+	if errA != nil || errB != nil || a.Hostname() == "" || b.Hostname() == "" || !strings.EqualFold(a.Scheme, b.Scheme) || !strings.EqualFold(a.Hostname(), b.Hostname()) {
+		return false
+	}
+	port := func(u *url.URL) string {
+		if value := u.Port(); value != "" {
+			return value
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "https":
+			return "443"
+		case "http":
+			return "80"
+		default:
+			return ""
+		}
+	}
+	return port(a) == port(b)
 }
 
 func (s *Server) apiStats(w http.ResponseWriter, r *http.Request) {
