@@ -106,6 +106,9 @@ func dialSOCKS(ctx context.Context, network, targetAddress string, dialer *net.D
 }
 
 func negotiateSOCKS5(conn net.Conn, proxy *url.URL, targetHost string, targetPort uint16) error {
+	if proxy.User != nil && proxy.User.Username() == "" {
+		return fmt.Errorf("SOCKS5 proxy username must not be empty")
+	}
 	methods := []byte{0x00}
 	if proxy.User != nil {
 		methods = append(methods, 0x02)
@@ -261,6 +264,17 @@ func resolveSOCKS4Host(ctx context.Context, host string, allowLoopback bool) (ne
 
 func egressIPAllowed(ip netip.Addr, allowLoopback bool) bool {
 	ip = ip.Unmap()
+	if ip.Is6() && ip.As16()[0] == 0x20 && ip.As16()[1] == 0x02 {
+		// 6to4 embeds an IPv4 destination in bytes 2..5; apply the IPv4
+		// policy to the embedded address instead of trusting the IPv6 wrapper.
+		b := ip.As16()
+		return egressIPAllowed(netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), allowLoopback)
+	}
+	for _, blocked := range []string{"100.64.0.0/10", "198.18.0.0/15", "64:ff9b::/96"} {
+		if prefix, err := netip.ParsePrefix(blocked); err == nil && prefix.Contains(ip) {
+			return false
+		}
+	}
 	allowed := ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsLoopback() && !ip.IsUnspecified()
 	return allowed || (allowLoopback && ip.IsLoopback())
 }

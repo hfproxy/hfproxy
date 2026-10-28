@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -52,7 +53,11 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	if err := validateEnvironmentOverrides(); err != nil {
+		return Config{}, err
+	}
 	var c Config
+	var err error
 	c.ListenAddr = value("LISTEN_ADDR", "127.0.0.1:8080")
 	c.PublicURL = value("PUBLIC_URL", "")
 	c.LogLevel = strings.ToLower(value("LOG_LEVEL", "info"))
@@ -61,7 +66,10 @@ func Load() (Config, error) {
 	c.HFBaseURL = value("HF_BASE_URL", "https://huggingface.co")
 	c.HFProxyURL = secret("HF_PROXY_URL", "")
 	c.HFToken = secret("HF_TOKEN", "")
-	c.HFAllowedHosts = split(value("HF_ALLOWED_REDIRECT_HOSTS", "huggingface.co,hf.co,*.huggingface.co,*.hf.co,*.xethub.hf.co"))
+	c.HFAllowedHosts, err = NormalizeAllowedHosts(split(value("HF_ALLOWED_REDIRECT_HOSTS", "huggingface.co,hf.co,*.huggingface.co,*.hf.co,*.xethub.hf.co")))
+	if err != nil {
+		return Config{}, err
+	}
 	c.HFTimeout = duration("HF_TIMEOUT", 2*time.Minute)
 	c.S3Endpoint = value("S3_ENDPOINT", "")
 	c.S3Region = value("S3_REGION", "us-east-1")
@@ -141,7 +149,7 @@ func (c Config) Validate() error {
 					return fmt.Errorf("SOCKS4 supports a user ID only, up to 255 bytes")
 				}
 			}
-			if strings.HasPrefix(proxyScheme, "socks5") && (len(username) > 255 || len(password) > 255 || (hasPassword && username == "")) {
+			if strings.HasPrefix(proxyScheme, "socks5") && (username == "" || len(username) > 255 || len(password) > 255) {
 				return fmt.Errorf("SOCKS5 username and password must each be at most 255 bytes")
 			}
 		}
@@ -158,6 +166,10 @@ func (c Config) Validate() error {
 	if c.AuthMode == "oidc" || c.OIDCIssuer != "" {
 		if c.OIDCIssuer == "" || c.OIDCClientID == "" || c.OIDCClientSecret == "" || c.OIDCRedirectURL == "" {
 			return fmt.Errorf("OIDC requires HFPROXY_OIDC_ISSUER, HFPROXY_OIDC_CLIENT_ID, HFPROXY_OIDC_CLIENT_SECRET, and HFPROXY_OIDC_REDIRECT_URL")
+		}
+		issuer, issuerErr := url.Parse(c.OIDCIssuer)
+		if issuerErr != nil || issuer.Host == "" || issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" || (issuer.Scheme != "https" && !(issuer.Scheme == "http" && isLoopbackHost(issuer.Hostname()))) {
+			return fmt.Errorf("HFPROXY_OIDC_ISSUER must use HTTPS outside loopback development")
 		}
 		redirect, parseErr := url.Parse(c.OIDCRedirectURL)
 		if parseErr != nil || redirect.Host == "" || (redirect.Scheme != "https" && !isLoopbackHost(redirect.Hostname())) {
@@ -223,6 +235,41 @@ func secret(key, fallback string) string {
 	return fallback
 }
 
+func validateEnvironmentOverrides() error {
+	for _, key := range []string{
+		"DATABASE_URL", "HF_PROXY_URL", "HF_TOKEN", "S3_ACCESS_KEY", "S3_SECRET_KEY", "SESSION_SECRET",
+		"OIDC_CLIENT_SECRET", "LDAP_BIND_PASSWORD", "OIDC_CLIENT_SECRET",
+	} {
+		if file := os.Getenv("HFPROXY_" + key + "_FILE"); file != "" {
+			if _, err := os.ReadFile(file); err != nil {
+				return fmt.Errorf("HFPROXY_%s_FILE cannot be read: %w", key, err)
+			}
+		}
+	}
+	for _, key := range []string{"AUTO_MIGRATE", "S3_FORCE_PATH_STYLE", "S3_SERVER_SIDE_ENCRYPTION", "ANONYMOUS_PUBLIC_READ", "OIDC_AUTO_PROVISION", "LDAP_STARTTLS", "LDAP_AUTO_PROVISION"} {
+		name := "HFPROXY_" + key
+		if value, ok := os.LookupEnv(name); ok && value != "" {
+			if _, err := strconv.ParseBool(value); err != nil {
+				return fmt.Errorf("%s must be a boolean", name)
+			}
+		}
+	}
+	for _, key := range []string{"HF_TIMEOUT", "SESSION_IDLE_TTL", "SESSION_ABSOLUTE_TTL", "CACHE_REF_TTL", "CACHE_NEGATIVE_TTL", "CACHE_GC_GRACE"} {
+		name := "HFPROXY_" + key
+		if value, ok := os.LookupEnv(name); ok && value != "" {
+			if _, err := time.ParseDuration(value); err != nil {
+				return fmt.Errorf("%s must be a valid Go duration", name)
+			}
+		}
+	}
+	if value, ok := os.LookupEnv("HFPROXY_CACHE_MAX_FILE_SIZE"); ok && value != "" {
+		if _, err := strconv.Atoi(value); err != nil {
+			return fmt.Errorf("HFPROXY_CACHE_MAX_FILE_SIZE must be an integer")
+		}
+	}
+	return nil
+}
+
 func boolean(key string, fallback bool) bool {
 	name := "HFPROXY_" + key
 	text, ok := os.LookupEnv(name)
@@ -272,6 +319,33 @@ func split(value string) []string {
 	return result
 }
 
+func NormalizeAllowedHosts(values []string) ([]string, error) {
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
+		if host == "" {
+			continue
+		}
+		if strings.HasPrefix(host, "*.") {
+			suffix := strings.TrimPrefix(host, "*.")
+			if suffix == "" || !strings.Contains(suffix, ".") || strings.ContainsAny(suffix, "*/\\") {
+				return nil, fmt.Errorf("invalid wildcard redirect host %q", raw)
+			}
+		} else if strings.ContainsAny(host, "*/\\") {
+			return nil, fmt.Errorf("invalid redirect host %q", raw)
+		}
+		result = append(result, host)
+	}
+	return result, nil
+}
+
 func isLoopbackHost(host string) bool {
-	return host == "localhost" || strings.HasPrefix(host, "127.") || host == "::1"
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "localhost" {
+		return true
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.IsLoopback()
+	}
+	return false
 }

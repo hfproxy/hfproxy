@@ -17,6 +17,11 @@ describe('AuthService session handling', () => {
 
   afterEach(() => http.verify());
 
+  it('starts without an authenticated principal', () => {
+    expect(auth.principal()).toBeNull();
+    expect(auth.busy()).toBeFalsy();
+  });
+
   it('clears the principal when the session expires', () => {
     auth.principal.set({ id: 'u1', username: 'admin', role: 'admin', authenticated: true });
     auth.expireSession();
