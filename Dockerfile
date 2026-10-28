@@ -20,7 +20,7 @@ COPY . .
 COPY --from=ui /ui/dist/hfproxy/browser ./internal/server/web/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${BUILD_VERSION} -X github.com/nicolas/hfproxy/internal/server.Version=${BUILD_VERSION} -X main.commit=${BUILD_COMMIT}" -o /out/hfproxy ./cmd/hfproxy
 
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates \
     && addgroup -S -g 65532 hfproxy \
     && adduser -S -D -H -u 65532 -G hfproxy hfproxy
