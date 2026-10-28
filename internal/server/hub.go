@@ -40,6 +40,12 @@ type artifact struct {
 	LastMod     sql.NullTime
 }
 
+func shouldStreamCacheMiss(r *http.Request, expectedLFS string) bool {
+	return expectedLFS == "" && !isPreloadFetch(r.Context()) && r.Method == http.MethodGet &&
+		r.Header.Get("Range") == "" && r.Header.Get("If-Range") == "" &&
+		r.Header.Get("If-None-Match") == "" && r.Header.Get("If-Modified-Since") == ""
+}
+
 type resolvePath struct{ RepoType, RepoID, Revision, FilePath string }
 
 type downloadProgressWriter struct {
@@ -256,7 +262,7 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 			resumeETag = firstHeaders.Get("ETag")
 		}
 		var stream io.Writer
-		if expectedLFS == "" && r.Method == http.MethodGet && r.Header.Get("Range") == "" && r.Header.Get("If-Range") == "" && r.Header.Get("If-None-Match") == "" && r.Header.Get("If-Modified-Since") == "" {
+		if shouldStreamCacheMiss(r, expectedLFS) {
 			s.setArtifactHeaders(w, meta, firstHeaders)
 			w.Header().Set("X-Cache", "MISS")
 			w.Header().Set("X-Repo-Commit", commit)
@@ -329,7 +335,7 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		hash := sha256.New()
 		limited := io.LimitReader(body.Body, s.currentConfig().CacheMaxFileSize+1)
 		destination := io.Writer(io.MultiWriter(tmp, hash))
-		if expectedLFS == "" && r.Method == http.MethodGet && r.Header.Get("Range") == "" && r.Header.Get("If-Range") == "" && r.Header.Get("If-None-Match") == "" && r.Header.Get("If-Modified-Since") == "" {
+		if shouldStreamCacheMiss(r, expectedLFS) {
 			s.setArtifactHeaders(w, meta, headers)
 			w.Header().Set("X-Cache", "MISS")
 			w.Header().Set("X-Repo-Commit", commit)

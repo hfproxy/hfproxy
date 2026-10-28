@@ -27,6 +27,11 @@ const (
 type localPrincipalContextKey struct{}
 type preloadFetchContextKey struct{}
 
+func isPreloadFetch(ctx context.Context) bool {
+	preload, _ := ctx.Value(preloadFetchContextKey{}).(bool)
+	return preload
+}
+
 type preloadJob struct {
 	ID             string    `json:"id"`
 	RepoType       string    `json:"repo_type"`
@@ -165,7 +170,7 @@ func (s *Server) recordPreloadCompletion(ctx context.Context, actorID, repositor
 }
 
 func (s *Server) serveOrAcknowledgePreload(w http.ResponseWriter, r *http.Request, artifact artifact, cacheStatus string) {
-	if _, ok := r.Context().Value(preloadFetchContextKey{}).(bool); ok {
+	if isPreloadFetch(r.Context()) {
 		w.Header().Set("X-Cache", cacheStatus)
 		w.WriteHeader(http.StatusOK)
 		return
