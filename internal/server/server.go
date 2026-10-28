@@ -211,7 +211,7 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	version, migrationErr := db.MigrationStatus(ctx, s.db.SQL)
-	if s.db.SQL.PingContext(ctx) != nil || migrationErr != nil || version < 4 || s.currentStorage().Ready(ctx) != nil {
+	if s.db.SQL.PingContext(ctx) != nil || migrationErr != nil || version < 5 || s.currentStorage().Ready(ctx) != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
 		return
 	}

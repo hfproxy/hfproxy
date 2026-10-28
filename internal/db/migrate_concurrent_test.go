@@ -70,7 +70,61 @@ func TestMigrateSerializesConcurrentFirstRun(t *testing.T) {
 	if err := databases[0].QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(fmt.Errorf("read final migration version: %w", err))
 	}
-	if version != 4 {
-		t.Fatalf("final migration version = %d, want 4", version)
+	if version != 5 {
+		t.Fatalf("final migration version = %d, want 5", version)
+	}
+}
+
+func TestIssue73MigrationDeletesGrantsForPreviouslyDeletedRepositories(t *testing.T) {
+	baseDSN := os.Getenv("HFPROXY_TEST_DATABASE_URL")
+	if baseDSN == "" {
+		t.Skip("HFPROXY_TEST_DATABASE_URL is not set")
+	}
+	admin, err := sql.Open("pgx", baseDSN)
+	if err != nil {
+		t.Fatalf("open administrative connection: %v", err)
+	}
+	t.Cleanup(func() { _ = admin.Close() })
+	databaseName := "hfproxy_issue73_" + strings.ReplaceAll(NewID(), "-", "")[:20]
+	if _, err := admin.Exec(`CREATE DATABASE ` + databaseName); err != nil {
+		t.Fatalf("create isolated database: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := admin.Exec(`DROP DATABASE IF EXISTS ` + databaseName + ` WITH (FORCE)`); err != nil {
+			t.Errorf("drop isolated database: %v", err)
+		}
+	})
+	dsnURL, err := url.Parse(baseDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsnURL.Path = "/" + databaseName
+	store, err := sql.Open("pgx", dsnURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := Migrate(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	repositoryID := NewID()
+	if _, err := store.Exec(`INSERT INTO repositories(id,repo_type,repo_id,access_policy,deleted_at) VALUES($1,'models','org/deleted','allowlist',now())`, repositoryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Exec(`INSERT INTO repo_grants(repository_id,subject_type,subject_id) VALUES($1,'group','stale-group')`, repositoryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Exec(`DELETE FROM schema_migrations WHERE version=5`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	var grants int
+	if err := store.QueryRow(`SELECT COUNT(*) FROM repo_grants WHERE repository_id=$1`, repositoryID).Scan(&grants); err != nil {
+		t.Fatal(err)
+	}
+	if grants != 0 {
+		t.Fatalf("stale grants after migration = %d, want 0", grants)
 	}
 }

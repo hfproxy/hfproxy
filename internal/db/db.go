@@ -77,6 +77,12 @@ func Migrate(ctx context.Context, sqlDB *sql.DB) error {
 		}
 		version = 4
 	}
+	if version < 5 {
+		if err := applyMigrationTx(ctx, tx, 5, schemaV5); err != nil {
+			return err
+		}
+		version = 5
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migrations: %w", err)
 	}
@@ -279,4 +285,8 @@ CREATE INDEX IF NOT EXISTS download_resumptions_updated_idx ON download_resumpti
 const schemaV4 = `
 ALTER TABLE blobs ADD COLUMN IF NOT EXISTS orphaned_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS blobs_orphaned_idx ON blobs(orphaned_at) WHERE orphaned_at IS NOT NULL;
+`
+
+const schemaV5 = `
+DELETE FROM repo_grants g USING repositories r WHERE g.repository_id=r.id AND r.deleted_at IS NOT NULL;
 `

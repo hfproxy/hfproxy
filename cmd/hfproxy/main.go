@@ -130,7 +130,7 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	if version < 4 {
+	if version < 5 {
 		return fmt.Errorf("database is not migrated; run hfproxy migrate up")
 	}
 	cfg, err = config.LoadPersisted(ctx, store.SQL, cfg)
@@ -294,7 +294,7 @@ func admin(args []string) error {
 		if err != nil {
 			return err
 		}
-		if version < 4 {
+		if version < 5 {
 			return fmt.Errorf("database is not migrated; run hfproxy migrate up")
 		}
 		if _, err = store.SQL.ExecContext(ctx, `INSERT INTO repositories(id,repo_type,repo_id,access_policy) VALUES($1,$2,$3,$4) ON CONFLICT(repo_type,repo_id) DO UPDATE SET access_policy=EXCLUDED.access_policy,deleted_at=NULL,updated_at=now()`, id, *repoType, *repoID, *policy); err != nil {
@@ -470,7 +470,7 @@ func cache(args []string) error {
 	defer store.SQL.Close()
 	if version, err := db.MigrationStatus(ctx, store.SQL); err != nil {
 		return err
-	} else if version < 4 {
+	} else if version < 5 {
 		return fmt.Errorf("database is not migrated; run hfproxy migrate up")
 	}
 	cfg, err = config.LoadPersisted(ctx, store.SQL, cfg)
