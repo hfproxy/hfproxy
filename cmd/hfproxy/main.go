@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aws/smithy-go"
 	"github.com/nicolas/hfproxy/internal/config"
 	"github.com/nicolas/hfproxy/internal/db"
 	"github.com/nicolas/hfproxy/internal/server"
@@ -25,7 +26,7 @@ import (
 )
 
 var (
-	version = "1.0.0"
+	version = "0.0.2"
 	commit  = "unknown"
 )
 
@@ -129,7 +130,7 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	if version < 3 {
+	if version < 4 {
 		return fmt.Errorf("database is not migrated; run hfproxy migrate up")
 	}
 	cfg, err = config.LoadPersisted(ctx, store.SQL, cfg)
@@ -289,12 +290,14 @@ func admin(args []string) error {
 			return fmt.Errorf("provide a valid --type, --id, and --policy")
 		}
 		id := db.NewID()
-		err := db.Migrate(ctx, store.SQL)
+		version, err := db.MigrationStatus(ctx, store.SQL)
 		if err != nil {
 			return err
 		}
-		_, err = store.SQL.ExecContext(ctx, `INSERT INTO repositories(id,repo_type,repo_id,access_policy) VALUES($1,$2,$3,$4) ON CONFLICT(repo_type,repo_id) DO UPDATE SET access_policy=EXCLUDED.access_policy,deleted_at=NULL,updated_at=now()`, id, *repoType, *repoID, *policy)
-		if err != nil {
+		if version < 4 {
+			return fmt.Errorf("database is not migrated; run hfproxy migrate up")
+		}
+		if _, err = store.SQL.ExecContext(ctx, `INSERT INTO repositories(id,repo_type,repo_id,access_policy) VALUES($1,$2,$3,$4) ON CONFLICT(repo_type,repo_id) DO UPDATE SET access_policy=EXCLUDED.access_policy,deleted_at=NULL,updated_at=now()`, id, *repoType, *repoID, *policy); err != nil {
 			return err
 		}
 		fmt.Printf("Registered %s/%s with policy %s.\n", *repoType, *repoID, *policy)
@@ -465,8 +468,10 @@ func cache(args []string) error {
 		return err
 	}
 	defer store.SQL.Close()
-	if err := db.Migrate(ctx, store.SQL); err != nil {
+	if version, err := db.MigrationStatus(ctx, store.SQL); err != nil {
 		return err
+	} else if version < 4 {
+		return fmt.Errorf("database is not migrated; run hfproxy migrate up")
 	}
 	cfg, err = config.LoadPersisted(ctx, store.SQL, cfg)
 	if err != nil {
@@ -487,7 +492,7 @@ func cache(args []string) error {
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
-		rows, err := store.SQL.QueryContext(ctx, `SELECT r.repo_type,r.repo_id,a.commit_sha,a.path,b.size_bytes,b.sha256,a.cached_at FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%') ORDER BY a.cached_at DESC LIMIT 200`, *repo, *pathFilter)
+		rows, err := store.SQL.QueryContext(ctx, `SELECT r.repo_type,r.repo_id,a.commit_sha,a.path,b.size_bytes,b.sha256,a.cached_at FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%' ESCAPE '\\') ORDER BY a.cached_at DESC LIMIT 200`, *repo, escapeCLILikePattern(*pathFilter))
 		if err != nil {
 			return err
 		}
@@ -512,7 +517,7 @@ func cache(args []string) error {
 			return err
 		}
 		var count, bytes int64
-		err = store.SQL.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%')`, *repo, *pathFilter).Scan(&count, &bytes)
+		err = store.SQL.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%' ESCAPE '\\')`, *repo, escapeCLILikePattern(*pathFilter)).Scan(&count, &bytes)
 		if err != nil {
 			return err
 		}
@@ -524,7 +529,7 @@ func cache(args []string) error {
 		if !*yes {
 			return fmt.Errorf("purge requires both --execute and --yes")
 		}
-		rows, err := store.SQL.QueryContext(ctx, `SELECT a.id FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%')`, *repo, *pathFilter)
+		rows, err := store.SQL.QueryContext(ctx, `SELECT a.id FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%' ESCAPE '\\')`, *repo, escapeCLILikePattern(*pathFilter))
 		if err != nil {
 			return err
 		}
@@ -544,37 +549,64 @@ func cache(args []string) error {
 		fmt.Printf("Purged %d entries.\n", len(ids))
 		return nil
 	case "verify":
-		rows, err := store.SQL.QueryContext(ctx, `SELECT id,sha256,storage_key,size_bytes FROM blobs ORDER BY created_at LIMIT 500`)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
 		checked, invalid := 0, 0
-		for rows.Next() {
-			var id, sha, key string
-			var expectedSize int64
-			if err := rows.Scan(&id, &sha, &key, &expectedSize); err != nil {
+		var cursorTime time.Time
+		var cursorID string
+		for {
+			query := `SELECT id,sha256,storage_key,size_bytes,created_at FROM blobs ORDER BY created_at,id LIMIT 200`
+			args := []any{}
+			if cursorID != "" {
+				query = `SELECT id,sha256,storage_key,size_bytes,created_at FROM blobs WHERE (created_at,id) > ($1,$2) ORDER BY created_at,id LIMIT 200`
+				args = []any{cursorTime, cursorID}
+			}
+			rows, err := store.SQL.QueryContext(ctx, query, args...)
+			if err != nil {
 				return err
 			}
-			out, err := objects.Get(ctx, key, "")
-			if err != nil {
-				fmt.Printf("MISSING %s %s\n", id, sha)
-				invalid++
+			pageCount := 0
+			for rows.Next() {
+				var id, sha, key string
+				var expectedSize int64
+				var createdAt time.Time
+				if err := rows.Scan(&id, &sha, &key, &expectedSize, &createdAt); err != nil {
+					rows.Close()
+					return err
+				}
+				cursorTime, cursorID = createdAt, id
+				pageCount++
+				objectCtx, objectCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				out, err := objects.Get(objectCtx, key, "")
+				if err != nil {
+					objectCancel()
+					var apiErr smithy.APIError
+					if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "NoSuchKey" || apiErr.ErrorCode() == "NotFound") {
+						fmt.Printf("MISSING %s %s\n", id, sha)
+					} else {
+						fmt.Printf("ERROR %s %s: %v\n", id, sha, err)
+					}
+					invalid++
+					checked++
+					continue
+				}
+				digest := sha256.New()
+				size, copyErr := io.Copy(digest, out.Body)
+				_ = out.Body.Close()
+				objectCancel()
+				actual := hex.EncodeToString(digest.Sum(nil))
+				if copyErr != nil || size != expectedSize || actual != sha {
+					fmt.Printf("INVALID %s expected=%s actual=%s bytes=%d/%d\n", id, sha, actual, size, expectedSize)
+					invalid++
+				}
 				checked++
-				continue
 			}
-			digest := sha256.New()
-			size, copyErr := io.Copy(digest, out.Body)
-			_ = out.Body.Close()
-			actual := hex.EncodeToString(digest.Sum(nil))
-			if copyErr != nil || size != expectedSize || actual != sha {
-				fmt.Printf("INVALID %s expected=%s actual=%s bytes=%d/%d\n", id, sha, actual, size, expectedSize)
-				invalid++
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return err
 			}
-			checked++
-		}
-		if err := rows.Err(); err != nil {
-			return err
+			rows.Close()
+			if pageCount < 200 {
+				break
+			}
 		}
 		fmt.Printf("Checked %d blobs; %d invalid or missing.\n", checked, invalid)
 		if invalid > 0 {
@@ -586,37 +618,35 @@ func cache(args []string) error {
 	}
 }
 
+func escapeCLILikePattern(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	return strings.ReplaceAll(value, `_`, `\_`)
+}
+
 func purgeCLI(ctx context.Context, store *db.Store, objects *storage.S3, id string) error {
 	tx, err := store.SQL.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var key, blobID string
-	if err := tx.QueryRowContext(ctx, `SELECT b.storage_key,b.id FROM artifacts a JOIN blobs b ON b.id=a.blob_id WHERE a.id=$1 FOR UPDATE OF a`, id).Scan(&key, &blobID); err != nil {
+	var blobID string
+	if err := tx.QueryRowContext(ctx, `SELECT b.id FROM artifacts a JOIN blobs b ON b.id=a.blob_id WHERE a.id=$1 FOR UPDATE OF a`, id).Scan(&blobID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM artifacts WHERE id=$1`, id); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE blobs SET orphaned_at=now() WHERE id=$1`, blobID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO audit_events(id,action,target_type,target_id,metadata_json) VALUES($1,'cache.entry.purge','artifact',$2,'{\"source\":\"cli\"}'::jsonb)", db.NewID(), id); err != nil {
 		return err
-	}
-	var refs int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE blob_id=$1`, blobID).Scan(&refs); err != nil {
-		return err
-	}
-	if refs == 0 {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM blobs WHERE id=$1`, blobID); err != nil {
-			return err
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	if refs == 0 {
-		return objects.Delete(ctx, key)
-	}
+	_ = objects // retained for the CLI's storage lifecycle and future GC hooks
 	return nil
 }
 

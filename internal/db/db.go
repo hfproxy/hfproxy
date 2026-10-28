@@ -30,43 +30,60 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 }
 
 func Migrate(ctx context.Context, sqlDB *sql.DB) error {
-	_, err := sqlDB.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve migration connection: %w", err)
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("start migration transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version BIGINT PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-	)`)
-	if err != nil {
+	)`); err != nil {
 		return fmt.Errorf("create migration table: %w", err)
 	}
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('hfproxy:schema-migrations'))`); err != nil {
+		return fmt.Errorf("lock migrations: %w", err)
+	}
 	var version int64
-	if err := sqlDB.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
 		return fmt.Errorf("read migration version: %w", err)
 	}
 	if version < 1 {
-		if err := applyMigration(ctx, sqlDB, 1, schemaV1); err != nil {
+		if err := applyMigrationTx(ctx, tx, 1, schemaV1); err != nil {
 			return err
 		}
 		version = 1
 	}
 	if version < 2 {
-		if err := applyMigration(ctx, sqlDB, 2, schemaV2); err != nil {
+		if err := applyMigrationTx(ctx, tx, 2, schemaV2); err != nil {
 			return err
 		}
 		version = 2
 	}
 	if version < 3 {
-		if err := applyMigration(ctx, sqlDB, 3, schemaV3); err != nil {
+		if err := applyMigrationTx(ctx, tx, 3, schemaV3); err != nil {
 			return err
 		}
+		version = 3
+	}
+	if version < 4 {
+		if err := applyMigrationTx(ctx, tx, 4, schemaV4); err != nil {
+			return err
+		}
+		version = 4
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migrations: %w", err)
 	}
 	return nil
 }
 
-func applyMigration(ctx context.Context, sqlDB *sql.DB, version int64, schema string) error {
-	tx, err := sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("start migration %d: %w", version, err)
-	}
-	defer tx.Rollback()
+func applyMigrationTx(ctx context.Context, tx *sql.Tx, version int64, schema string) error {
 	for _, statement := range strings.Split(schema, ";") {
 		if strings.TrimSpace(statement) == "" {
 			continue
@@ -78,7 +95,7 @@ func applyMigration(ctx context.Context, sqlDB *sql.DB, version int64, schema st
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES ($1) ON CONFLICT DO NOTHING`, version); err != nil {
 		return fmt.Errorf("record migration %d: %w", version, err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 func MigrationStatus(ctx context.Context, sqlDB *sql.DB) (int64, error) {
@@ -257,4 +274,9 @@ CREATE TABLE IF NOT EXISTS download_resumptions (
     UNIQUE(repository_id, commit_sha, path)
 );
 CREATE INDEX IF NOT EXISTS download_resumptions_updated_idx ON download_resumptions(updated_at);
+`
+
+const schemaV4 = `
+ALTER TABLE blobs ADD COLUMN IF NOT EXISTS orphaned_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS blobs_orphaned_idx ON blobs(orphaned_at) WHERE orphaned_at IS NOT NULL;
 `

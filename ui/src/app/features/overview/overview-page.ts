@@ -119,6 +119,10 @@ export class OverviewPageComponent implements OnInit, OnDestroy {
       this.preloadJobs.set(result.preloads);
     } catch {
       // Keep the most recent transfer state visible if a poll briefly fails.
+      if (!this.auth.principal() && this.transferPoll !== undefined) {
+        window.clearInterval(this.transferPoll);
+        this.transferPoll = undefined;
+      }
     } finally {
       this.transferPollRunning = false;
     }

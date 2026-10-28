@@ -1,5 +1,6 @@
 import { HttpClient } from '@angular/common/http';
 import { inject, Injectable, signal } from '@angular/core';
+import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { AdminApiService } from './admin-api.service';
 import { AuthProviders, Principal } from './admin.types';
@@ -73,6 +74,7 @@ export class AuthService {
   }
 
   async signOut(): Promise<void> {
+    this.error.set('');
     this.busy.set(true);
     try {
       const form = new URLSearchParams({ csrf_token: this.cookie('hfproxy_csrf') });
@@ -82,13 +84,22 @@ export class AuthService {
           responseType: 'text',
         }),
       );
-    } catch {
-      // An expired session is already signed out on the server.
+	  this.principal.set(null);
+    } catch (error) {
+      if (error instanceof HttpErrorResponse && error.status === 401) {
+        this.principal.set(null);
+      } else {
+        this.error.set(AdminApiService.errorMessage(error, 'Sign-out failed. Please retry.'));
+      }
     } finally {
-      this.principal.set(null);
       this.busy.set(false);
-      await this.loadProviders();
+      if (!this.principal()) await this.loadProviders();
     }
+  }
+
+  expireSession(): void {
+    this.principal.set(null);
+    this.error.set('Your session has expired. Please sign in again.');
   }
 
   private async loadProviders(): Promise<void> {

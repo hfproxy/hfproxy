@@ -67,7 +67,7 @@
 
         {{if .IsAdmin}}<section class="panel add-panel" id="add-repo"><div class="panel-head"><div><h2>Enregistrer un dépôt</h2><p>Définissez son accès local avant de le servir depuis le cache.</p></div></div><form class="repo-form" method="post" action="/"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><label>Type<select name="repo_type"><option value="models">Modèle</option><option value="datasets">Dataset</option><option value="spaces">Space</option></select></label><label>Identifiant du dépôt<input name="repo_id" placeholder="organisation/nom-du-modele" required></label><label>Politique<select name="access_policy"><option value="public">Public</option><option value="allowlist">Liste d’autorisation</option><option value="admin_only">Administrateurs uniquement</option></select></label><button class="button primary" type="submit">Enregistrer la politique <span>→</span></button></form><p class="form-hint">Les dépôts en liste d’autorisation sont refusés tant qu’aucun droit de lecture n’est attribué via l’API d’administration.</p></section>{{end}}
 
-        <footer class="footer"><span>hfproxy <b>v1.0.0</b></span><span>Les jetons Hugging Face restent sur le serveur.</span><a href="/readyz">Santé de l’instance</a></footer>
+        <footer class="footer"><span>hfproxy <b>v0.0.2</b></span><span>Les jetons Hugging Face restent sur le serveur.</span><a href="/readyz">Santé de l’instance</a></footer>
       </div>
     </main>
   </div>

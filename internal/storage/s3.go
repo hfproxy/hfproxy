@@ -6,17 +6,17 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 type S3 struct {
 	client               *s3.Client
-	upload               *manager.Uploader
 	bucket               string
 	prefix               string
 	serverSideEncryption bool
@@ -37,10 +37,7 @@ func New(ctx context.Context, endpoint, region, bucket, prefix, accessKey, secre
 			o.BaseEndpoint = aws.String(endpoint)
 		}
 	})
-	return &S3{client: client, upload: manager.NewUploader(client, func(u *manager.Uploader) {
-		u.PartSize = 64 << 20
-		u.Concurrency = 3
-	}), bucket: bucket, prefix: strings.Trim(prefix, "/"), serverSideEncryption: serverSideEncryption}, nil
+	return &S3{client: client, bucket: bucket, prefix: strings.Trim(prefix, "/"), serverSideEncryption: serverSideEncryption}, nil
 }
 
 func (s *S3) Key(sha256 string) string {
@@ -63,16 +60,47 @@ func (s *S3) UploadFile(ctx context.Context, file *os.File, key, contentType str
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	input := &s3.PutObjectInput{
-		Bucket: aws.String(s.bucket), Key: aws.String(key), Body: file,
-		ContentLength: aws.Int64(size), ContentType: aws.String(contentType),
+	if size <= 64<<20 {
+		input := &s3.PutObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key), Body: file, ContentLength: aws.Int64(size), ContentType: aws.String(contentType)}
+		if s.serverSideEncryption {
+			input.ServerSideEncryption = "AES256"
+		}
+		_, err := s.client.PutObject(ctx, input)
+		if err != nil {
+			return fmt.Errorf("upload object to S3: %w", err)
+		}
+		return nil
 	}
+	create := &s3.CreateMultipartUploadInput{Bucket: aws.String(s.bucket), Key: aws.String(key), ContentType: aws.String(contentType)}
 	if s.serverSideEncryption {
-		input.ServerSideEncryption = "AES256"
+		create.ServerSideEncryption = "AES256"
 	}
-	_, err := s.upload.Upload(ctx, input)
+	upload, err := s.client.CreateMultipartUpload(ctx, create)
 	if err != nil {
-		return fmt.Errorf("upload object to S3: %w", err)
+		return fmt.Errorf("start multipart upload: %w", err)
+	}
+	abort := func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		_, _ = s.client.AbortMultipartUpload(cleanup, &s3.AbortMultipartUploadInput{Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: upload.UploadId})
+	}
+	const partSize int64 = 64 << 20
+	parts := make([]types.CompletedPart, 0, (size+partSize-1)/partSize)
+	for offset, partNumber := int64(0), int32(1); offset < size; offset, partNumber = offset+partSize, partNumber+1 {
+		length := partSize
+		if remaining := size - offset; remaining < length {
+			length = remaining
+		}
+		part, partErr := s.client.UploadPart(ctx, &s3.UploadPartInput{Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: upload.UploadId, PartNumber: aws.Int32(partNumber), Body: io.NewSectionReader(file, offset, length), ContentLength: aws.Int64(length)})
+		if partErr != nil {
+			abort()
+			return fmt.Errorf("upload multipart part: %w", partErr)
+		}
+		parts = append(parts, types.CompletedPart{ETag: part.ETag, PartNumber: aws.Int32(partNumber)})
+	}
+	if _, err := s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: upload.UploadId, MultipartUpload: &types.CompletedMultipartUpload{Parts: parts}}); err != nil {
+		abort()
+		return fmt.Errorf("complete multipart upload: %w", err)
 	}
 	return nil
 }

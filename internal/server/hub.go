@@ -19,6 +19,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nicolas/hfproxy/internal/config"
@@ -106,6 +107,11 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	requestURL := upstreamResolvePath(parsed)
+	negativeKey := repoPK + "|" + parsed.Revision + "|" + parsed.FilePath
+	if status, headers, ok := s.negativeLookup(negativeKey); ok {
+		s.hubStatus(w, r, status, headers)
+		return
+	}
 	upstream, firstHeaders, err := s.fetchHub(r.Context(), http.MethodHead, requestURL, safeResolveQuery(r.URL.Query()), nil)
 	if err != nil {
 		s.hubFailure(w, r, err)
@@ -113,6 +119,9 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer upstream.Body.Close()
 	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
+		if upstream.StatusCode == http.StatusNotFound || upstream.StatusCode == http.StatusGone {
+			s.negativeStore(negativeKey, upstream.StatusCode, upstream.Header)
+		}
 		s.hubStatus(w, r, upstream.StatusCode, upstream.Header)
 		return
 	}
@@ -135,8 +144,10 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 			ON CONFLICT(repository_id,requested_ref) DO UPDATE SET commit_sha=EXCLUDED.commit_sha,resolved_at=now()`, db.NewID(), repoPK, parsed.Revision, commit)
 	}
 	meta := artifact{Repository: repoPK, Commit: commit, Path: parsed.FilePath, ETag: upstream.Header.Get("ETag"), ContentType: upstream.Header.Get("Content-Type")}
-	if meta.ETag == "" {
-		meta.ETag = firstHeaders.Get("X-Linked-ETag")
+	if linked := firstHeaders.Get("X-Linked-ETag"); lfsSHA256(linked) != "" {
+		meta.ETag = linked
+	} else if meta.ETag == "" {
+		meta.ETag = linked
 	}
 	if lm := upstream.Header.Get("Last-Modified"); lm != "" {
 		if t, e := http.ParseTime(lm); e == nil {
@@ -185,17 +196,16 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, 401, "Authentication required", "Sign in to access this repository.")
 		return
 	}
-	// A transaction-scoped PostgreSQL advisory lock coalesces fetches across all instances.
 	tx, err := s.db.SQL.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to coordinate this download.")
 		return
 	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(r.Context(), `SELECT pg_advisory_xact_lock(hashtext($1))`, repoPK+":"+commit+":"+parsed.FilePath); err != nil {
-		writeProblem(w, r, 500, "Database error", "Unable to coordinate this download.")
-		return
-	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
 	if cached, err = s.findArtifact(r.Context(), tx, repoPK, commit, parsed.FilePath); err == nil {
 		if err := tx.Commit(); err != nil {
 			writeProblem(w, r, 500, "Database error", "Unable to finish cache lookup.")
@@ -208,6 +218,21 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, 500, "Cache metadata error", "Unable to read cache metadata.")
 		return
 	}
+	// Do not hold a database connection while downloading from the Hub or
+	// uploading to object storage; progress writes use the pool separately.
+	_ = tx.Rollback()
+	tx = nil
+	missKey := repoPK + "|" + commit + "|" + parsed.FilePath
+	leader, done := s.joinCacheMiss(missKey)
+	if !leader {
+		select {
+		case <-done:
+			s.resolveFile(w, r)
+		case <-r.Context().Done():
+		}
+		return
+	}
+	defer s.finishCacheMiss(missKey)
 	downloadID := db.NewID()
 	_, _ = s.db.SQL.ExecContext(r.Context(), `INSERT INTO downloads(id,repository_id,commit_sha,path,status,bytes) VALUES($1,$2,$3,$4,'downloading',0)`, downloadID, repoPK, commit, parsed.FilePath)
 	objectStore := s.currentStorage()
@@ -221,12 +246,23 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	var size int64
 	var digest string
 	var resume *downloadResume
+	streamed := false
 	if sizeKnown {
 		resumeETag := upstream.Header.Get("ETag")
 		if resumeETag == "" {
 			resumeETag = firstHeaders.Get("ETag")
 		}
-		tmp, digest, resume, err = s.downloadResumable(r.Context(), objectStore, downloadID, repoPK, commit, parsed, meta.Size, resumeETag, meta.ContentType)
+		var stream io.Writer
+		if r.Method == http.MethodGet && r.Header.Get("Range") == "" && r.Header.Get("If-Range") == "" && r.Header.Get("If-None-Match") == "" && r.Header.Get("If-Modified-Since") == "" {
+			s.setArtifactHeaders(w, meta, firstHeaders)
+			w.Header().Set("X-Cache", "MISS")
+			w.Header().Set("X-Repo-Commit", commit)
+			w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
+			w.WriteHeader(http.StatusOK)
+			stream = asStreamingWriter(w)
+			streamed = true
+		}
+		tmp, digest, resume, err = s.downloadResumable(r.Context(), objectStore, downloadID, repoPK, commit, parsed, meta.Size, resumeETag, meta.ContentType, stream)
 		size = meta.Size
 		if err != nil {
 			completed := int64(0)
@@ -292,7 +328,19 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		}()
 		hash := sha256.New()
 		limited := io.LimitReader(body.Body, s.currentConfig().CacheMaxFileSize+1)
-		progress := &downloadProgressWriter{ctx: r.Context(), db: s.db.SQL, id: downloadID, destination: io.MultiWriter(tmp, hash), lastPersist: time.Now()}
+		destination := io.Writer(io.MultiWriter(tmp, hash))
+		if r.Method == http.MethodGet && r.Header.Get("Range") == "" && r.Header.Get("If-Range") == "" && r.Header.Get("If-None-Match") == "" && r.Header.Get("If-Modified-Since") == "" {
+			s.setArtifactHeaders(w, meta, headers)
+			w.Header().Set("X-Cache", "MISS")
+			w.Header().Set("X-Repo-Commit", commit)
+			if body.ContentLength >= 0 {
+				w.Header().Set("Content-Length", strconv.FormatInt(body.ContentLength, 10))
+			}
+			w.WriteHeader(http.StatusOK)
+			destination = io.MultiWriter(tmp, hash, asStreamingWriter(w))
+			streamed = true
+		}
+		progress := &downloadProgressWriter{ctx: r.Context(), db: s.db.SQL, id: downloadID, destination: destination, lastPersist: time.Now()}
 		size, err = io.Copy(progress, limited)
 		if err != nil {
 			s.finishDownload(r.Context(), downloadID, size, "upstream_read")
@@ -305,6 +353,14 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		digest = hex.EncodeToString(hash.Sum(nil))
+	}
+	if expected := lfsSHA256(firstHeaders.Get("X-Linked-ETag")); expected != "" && digest != expected {
+		if resume != nil {
+			_ = s.resetDownloadResume(r.Context(), objectStore, resume, resume.ETag, resume.TotalSize, resume.ContentType)
+		}
+		s.finishDownload(r.Context(), downloadID, size, "integrity")
+		writeProblem(w, r, http.StatusBadGateway, "Integrity check failed", "The downloaded file did not match the Hub's advertised SHA-256.")
+		return
 	}
 	key := objectStore.Key(digest)
 	contentType := meta.ContentType
@@ -324,15 +380,21 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	tx, err = s.db.SQL.BeginTx(r.Context(), nil)
+	if err != nil {
+		s.finishDownload(r.Context(), downloadID, size, "metadata")
+		writeProblem(w, r, 500, "Cache metadata error", "Unable to open cache metadata transaction.")
+		return
+	}
 	var blobID, existingKey string
-	err = tx.QueryRowContext(r.Context(), `SELECT id,storage_key FROM blobs WHERE sha256=$1`, digest).Scan(&blobID, &existingKey)
+	err = tx.QueryRowContext(r.Context(), `SELECT id,storage_key FROM blobs WHERE sha256=$1 FOR UPDATE`, digest).Scan(&blobID, &existingKey)
 	if err == sql.ErrNoRows {
 		if err = objectStore.UploadFile(r.Context(), tmp, key, contentType, size); err != nil {
 			s.finishDownload(r.Context(), downloadID, size, "storage")
 			writeProblem(w, r, 502, "Storage error", "The downloaded file could not be published to object storage.")
 			return
 		}
-		err = tx.QueryRowContext(r.Context(), `INSERT INTO blobs(id,sha256,size_bytes,storage_key,content_type,verified_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(sha256) DO UPDATE SET sha256=EXCLUDED.sha256 RETURNING id`, db.NewID(), digest, size, key, contentType).Scan(&blobID)
+		err = tx.QueryRowContext(r.Context(), `INSERT INTO blobs(id,sha256,size_bytes,storage_key,content_type,verified_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(sha256) DO UPDATE SET orphaned_at=NULL RETURNING id`, db.NewID(), digest, size, key, contentType).Scan(&blobID)
 		if err != nil {
 			s.finishDownload(r.Context(), downloadID, size, "metadata")
 			writeProblem(w, r, 500, "Cache metadata error", "Unable to publish cache metadata.")
@@ -375,12 +437,152 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 		cancel()
 	}
 	s.finishDownload(r.Context(), downloadID, size, "")
+	if streamed {
+		return
+	}
 	cached, err = s.findArtifact(r.Context(), s.db.SQL, repoPK, commit, parsed.FilePath)
 	if err != nil {
 		writeProblem(w, r, 500, "Cache metadata error", "The artifact was stored but could not be read back.")
 		return
 	}
 	s.serveOrAcknowledgePreload(w, r, cached, "MISS")
+}
+
+func (s *Server) negativeLookup(key string) (int, http.Header, bool) {
+	s.negativeMu.Lock()
+	defer s.negativeMu.Unlock()
+	entry, ok := s.negative[key]
+	if !ok || time.Now().After(entry.expires) {
+		if ok {
+			delete(s.negative, key)
+		}
+		return 0, nil, false
+	}
+	return entry.status, entry.headers.Clone(), true
+}
+
+func (s *Server) negativeStore(key string, status int, headers http.Header) {
+	s.negativeMu.Lock()
+	defer s.negativeMu.Unlock()
+	if s.negative == nil {
+		s.negative = make(map[string]negativeCacheEntry)
+	}
+	selected := make(http.Header)
+	for _, name := range []string{"X-Error-Code", "X-Error-Message", "X-Repo-Commit", "Retry-After"} {
+		if value := headers.Get(name); value != "" {
+			selected.Set(name, value)
+		}
+	}
+	s.negative[key] = negativeCacheEntry{expires: time.Now().Add(s.currentConfig().CacheNegativeTTL), status: status, headers: selected}
+}
+
+func (s *Server) joinCacheMiss(key string) (bool, <-chan struct{}) {
+	s.missMu.Lock()
+	defer s.missMu.Unlock()
+	if s.misses == nil {
+		s.misses = make(map[string]*cacheMiss)
+	}
+	if flight, ok := s.misses[key]; ok {
+		return false, flight.done
+	}
+	s.misses[key] = &cacheMiss{done: make(chan struct{})}
+	return true, s.misses[key].done
+}
+
+func (s *Server) finishCacheMiss(key string) {
+	s.missMu.Lock()
+	defer s.missMu.Unlock()
+	if flight, ok := s.misses[key]; ok {
+		delete(s.misses, key)
+		close(flight.done)
+	}
+}
+
+func (s *Server) startOrphanedBlobGC(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = s.collectOrphanedBlobs(ctx)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (s *Server) collectOrphanedBlobs(ctx context.Context) error {
+	objects := s.currentStorage()
+	if objects == nil || s.currentConfig().CacheGCGrace <= 0 {
+		return nil
+	}
+	rows, err := s.db.SQL.QueryContext(ctx, `SELECT id FROM blobs b
+		WHERE b.orphaned_at IS NOT NULL AND b.orphaned_at < now()-$1::interval
+		AND NOT EXISTS (SELECT 1 FROM artifacts a WHERE a.blob_id=b.id)`, s.currentConfig().CacheGCGrace.String())
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, id := range ids {
+		tx, err := s.db.SQL.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		var key string
+		if err = tx.QueryRowContext(ctx, `SELECT storage_key FROM blobs WHERE id=$1 AND orphaned_at IS NOT NULL AND orphaned_at < now()-$2::interval FOR UPDATE`, id, s.currentConfig().CacheGCGrace.String()).Scan(&key); err == sql.ErrNoRows {
+			_ = tx.Rollback()
+			continue
+		} else if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		var refs int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE blob_id=$1`, id).Scan(&refs); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if refs > 0 {
+			_, err = tx.ExecContext(ctx, `UPDATE blobs SET orphaned_at=NULL WHERE id=$1`, id)
+			if err == nil {
+				err = tx.Commit()
+			} else {
+				_ = tx.Rollback()
+			}
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		// Hold the blob row lock while deleting the object. A concurrent cache
+		// fill must lock this row before reusing the same digest.
+		if err = objects.Delete(ctx, key); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM blobs WHERE id=$1`, id); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func parseResolvePath(escaped string) (resolvePath, error) {
@@ -470,6 +672,20 @@ func validCommit(value string) bool {
 	}
 	return true
 }
+
+func lfsSHA256(value string) string {
+	value = strings.TrimPrefix(strings.TrimSpace(value), "W/")
+	value = strings.Trim(value, `"`)
+	if len(value) != sha256.Size*2 {
+		return ""
+	}
+	for _, r := range value {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F') {
+			return ""
+		}
+	}
+	return strings.ToLower(value)
+}
 func hasControl(value string) bool {
 	for _, r := range value {
 		if r < 0x20 || r == 0x7f {
@@ -554,6 +770,80 @@ type fetchResult struct {
 	First http.Header
 }
 
+type idleBody struct {
+	body    io.ReadCloser
+	timeout time.Duration
+	mu      sync.Mutex
+	timer   *time.Timer
+	closed  bool
+}
+
+type flushWriter struct {
+	io.Writer
+	flusher http.Flusher
+}
+
+func (w flushWriter) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	if err == nil {
+		w.flusher.Flush()
+	}
+	return n, err
+}
+
+func asStreamingWriter(w io.Writer) io.Writer {
+	if flusher, ok := w.(http.Flusher); ok {
+		return flushWriter{Writer: w, flusher: flusher}
+	}
+	return w
+}
+
+func newIdleBody(body io.ReadCloser, timeout time.Duration) *idleBody {
+	return &idleBody{body: body, timeout: timeout}
+}
+
+func (b *idleBody) resetTimer() {
+	if b.timeout <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return
+	}
+	if b.timer == nil {
+		b.timer = time.AfterFunc(b.timeout, func() {
+			b.mu.Lock()
+			if b.closed {
+				b.mu.Unlock()
+				return
+			}
+			b.closed = true
+			b.mu.Unlock()
+			_ = b.body.Close()
+		})
+	} else {
+		b.timer.Reset(b.timeout)
+	}
+}
+
+func (b *idleBody) Read(p []byte) (int, error) {
+	b.resetTimer()
+	n, err := b.body.Read(p)
+	b.resetTimer()
+	return n, err
+}
+
+func (b *idleBody) Close() error {
+	b.mu.Lock()
+	b.closed = true
+	if b.timer != nil {
+		b.timer.Stop()
+	}
+	b.mu.Unlock()
+	return b.body.Close()
+}
+
 func (s *Server) fetchHub(ctx context.Context, method, requestPath string, query url.Values, headers http.Header) (*http.Response, http.Header, error) {
 	target := strings.TrimRight(s.currentConfig().HFBaseURL, "/") + requestPath
 	if len(query) > 0 {
@@ -580,7 +870,7 @@ func (s *Server) fetchHub(ctx context.Context, method, requestPath string, query
 		if err != nil {
 			return nil, nil, fmt.Errorf("build upstream request")
 		}
-		req.Header.Set("User-Agent", "hfproxy/1.0.0")
+		req.Header.Set("User-Agent", "hfproxy/"+Version)
 		req.Header.Set("Accept-Encoding", "identity")
 		for key, values := range headers {
 			if isHopByHop(key) || strings.HasPrefix(strings.ToLower(key), "proxy-") {
@@ -601,6 +891,7 @@ func (s *Server) fetchHub(ctx context.Context, method, requestPath string, query
 			first = resp.Header.Clone()
 		}
 		if resp.StatusCode < 300 || resp.StatusCode > 399 {
+			resp.Body = newIdleBody(resp.Body, s.currentConfig().HFTimeout)
 			return resp, first, nil
 		}
 		location := resp.Header.Get("Location")
@@ -628,7 +919,14 @@ func (s *Server) fetchHub(ctx context.Context, method, requestPath string, query
 }
 
 func configLoopback(host string) bool {
-	return host == "localhost" || strings.HasPrefix(host, "127.") || host == "::1"
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "localhost" {
+		return true
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 func newEgressDialer(allowLoopback bool, proxy *url.URL) func(context.Context, string, string) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
@@ -663,10 +961,7 @@ func newEgressDialer(allowLoopback bool, proxy *url.URL) func(context.Context, s
 		}
 		checkAndDial := func(ip netip.Addr) (net.Conn, error) {
 			ip = ip.Unmap()
-			allowed := ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsLoopback() && !ip.IsUnspecified()
-			if allowLoopback && ip.IsLoopback() {
-				allowed = true
-			}
+			allowed := egressIPAllowed(ip, allowLoopback)
 			if !allowed {
 				return nil, fmt.Errorf("egress to non-public IP is blocked")
 			}
@@ -710,20 +1005,27 @@ func newHFHTTPClient(cfg config.Config) *http.Client {
 		default:
 			transport.Proxy = nil
 		}
+	} else {
+		// Do not inherit HTTP(S)_PROXY from the process environment unless it
+		// was explicitly configured for Hugging Face.
+		transport.Proxy = nil
 	}
 	transport.DialContext = newEgressDialer(configLoopback(base.Hostname()), proxy)
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	return &http.Client{Timeout: cfg.HFTimeout, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	transport.ResponseHeaderTimeout = cfg.HFTimeout
+	return &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 func (s *Server) allowedRedirectHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	base, _ := url.Parse(s.currentConfig().HFBaseURL)
-	if strings.EqualFold(host, base.Hostname()) {
+	if strings.TrimSuffix(strings.ToLower(base.Hostname()), ".") == host {
 		return true
 	}
 	if ip, err := netip.ParseAddr(host); err == nil && !ip.IsGlobalUnicast() {
 		return false
 	}
 	for _, allowed := range s.currentConfig().HFAllowedHosts {
+		allowed = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(allowed)), ".")
 		if strings.HasPrefix(allowed, "*.") {
 			suffix := strings.TrimPrefix(allowed, "*")
 			if strings.HasSuffix(host, suffix) && host != strings.TrimPrefix(suffix, ".") {
@@ -838,7 +1140,9 @@ func parseByteRange(value string, size int64) (int64, int64, bool, bool) {
 		return 0, 0, false, true
 	}
 	if !strings.HasPrefix(value, "bytes=") || strings.Contains(value, ",") {
-		return 0, 0, false, false
+		// Unsupported units and multi-range requests are ignored when the
+		// server does not implement multipart/byteranges.
+		return 0, 0, false, true
 	}
 	parts := strings.SplitN(strings.TrimPrefix(value, "bytes="), "-", 2)
 	if len(parts) != 2 || size <= 0 {
@@ -900,8 +1204,11 @@ func notModifiedSince(header string, last time.Time) bool {
 	return err == nil && !last.Truncate(time.Second).After(t)
 }
 func ifRangeMatches(value string, a artifact) bool {
-	if strings.HasPrefix(value, "\"") || strings.HasPrefix(value, "W/") {
-		return value == a.ETag
+	if strings.HasPrefix(value, "W/") {
+		return false
+	}
+	if strings.HasPrefix(value, "\"") {
+		return value == a.ETag && !strings.HasPrefix(a.ETag, "W/")
 	}
 	if a.LastMod.Valid {
 		if t, err := http.ParseTime(value); err == nil {
@@ -916,6 +1223,7 @@ func (s *Server) hubFailure(w http.ResponseWriter, r *http.Request, err error) {
 	writeProblem(w, r, 502, "Hugging Face upstream unavailable", "The upstream request failed or returned invalid metadata.")
 }
 func (s *Server) hubStatus(w http.ResponseWriter, r *http.Request, status int, headers http.Header) {
+	w.Header().Del("Content-Length")
 	if status < 400 || status > 599 {
 		status = 502
 	}
@@ -924,12 +1232,25 @@ func (s *Server) hubStatus(w http.ResponseWriter, r *http.Request, status int, h
 			w.Header().Set("Retry-After", retry)
 		}
 	}
+	for _, key := range []string{"X-Error-Code", "X-Error-Message", "X-Repo-Commit"} {
+		if value := safeUpstreamHeader(headers.Get(key), 1024); value != "" {
+			w.Header().Set(key, value)
+		}
+	}
 	titles := map[int]string{400: "Bad request", 401: "Upstream authentication required", 403: "Upstream access denied", 404: "File or repository not found", 410: "Resource gone", 429: "Upstream rate limit", 500: "Upstream error", 502: "Upstream unavailable", 503: "Upstream unavailable", 504: "Upstream timeout"}
 	title, ok := titles[status]
 	if !ok {
 		title = "Upstream error"
 	}
 	writeProblem(w, r, status, title, "Hugging Face returned an error for this resource.")
+}
+
+func safeUpstreamHeader(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if len(value) > max || strings.ContainsAny(value, "\r\n") {
+		return ""
+	}
+	return value
 }
 
 func (s *Server) recordDownload(ctx context.Context, repoID, commit, file, status string, bytes int64, errorClass string) {

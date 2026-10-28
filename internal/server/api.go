@@ -3,16 +3,19 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/nicolas/hfproxy/internal/config"
 	"github.com/nicolas/hfproxy/internal/db"
 	"github.com/nicolas/hfproxy/internal/storage"
@@ -23,11 +26,73 @@ func (s *Server) apiV1(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if isMutation(r.Method) && !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") && !s.checkCSRF(r) {
+	if isMutation(r.Method) && !hasBearer(r) && !s.checkCSRF(r) {
 		writeProblem(w, r, http.StatusForbidden, "CSRF validation failed", "Reload the page and retry the action.")
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/")
+	if isMutation(r.Method) && hasBearer(r) {
+		p, err := s.authenticate(r)
+		if err != nil || p.TokenID == "" || (!hasScope(p, "write") && !hasScope(p, "admin")) {
+			writeProblem(w, r, http.StatusForbidden, "Forbidden", "This token is read-only and cannot modify the administration API.")
+			return
+		}
+	}
+	// Match known paths before methods so callers receive 405 with the
+	// endpoint's actual Allow header instead of an ambiguous 404.
+	switch path {
+	case "auth/providers", "me", "healthz", "stats", "downloads/active", "cache/entries", "audit-events", "settings/public":
+		if r.Method != http.MethodGet {
+			methodNotAllowedWith(w, "GET")
+			return
+		}
+	case "repos", "users", "groups":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			methodNotAllowedWith(w, "GET, POST")
+			return
+		}
+	case "cache/purge":
+		if r.Method != http.MethodPost {
+			methodNotAllowedWith(w, "POST")
+			return
+		}
+	case "settings":
+		if r.Method != http.MethodGet && r.Method != http.MethodPut {
+			methodNotAllowedWith(w, "GET, PUT")
+			return
+		}
+	case "settings/test-s3", "settings/test-hub":
+		if r.Method != http.MethodPost {
+			methodNotAllowedWith(w, "POST")
+			return
+		}
+	case "users/", "groups/":
+		// Handled below; this case documents the prefix-only routes.
+	}
+	if strings.HasPrefix(path, "repos/") {
+		parts := strings.Split(strings.TrimPrefix(path, "repos/"), "/")
+		allow := "GET, PATCH, DELETE"
+		if len(parts) == 2 && parts[1] == "grants" {
+			allow = "GET, POST, DELETE"
+		} else if len(parts) == 2 && parts[1] == "preload" {
+			allow = "POST"
+		} else if len(parts) != 1 {
+			writeProblem(w, r, http.StatusNotFound, "Not found", "This hfproxy API route is not implemented.")
+			return
+		}
+		if !strings.Contains(allow, r.Method) {
+			methodNotAllowedWith(w, allow)
+			return
+		}
+	}
+	if strings.HasPrefix(path, "users/") && strings.Count(strings.TrimPrefix(path, "users/"), "/") == 0 && r.Method != http.MethodPatch {
+		methodNotAllowedWith(w, http.MethodPatch)
+		return
+	}
+	if strings.HasPrefix(path, "groups/") && strings.Count(strings.TrimPrefix(path, "groups/"), "/") == 0 && r.Method != http.MethodGet && r.Method != http.MethodPatch {
+		methodNotAllowedWith(w, "GET, PATCH")
+		return
+	}
 	switch {
 	case path == "auth/providers" && r.Method == http.MethodGet:
 		providers := map[string]any{"local": s.currentConfig().AuthMode == "local", "oidc": s.currentOIDCConfig() != nil, "ldap": s.currentConfig().LDAPURL != ""}
@@ -62,6 +127,10 @@ func (s *Server) apiV1(w http.ResponseWriter, r *http.Request) {
 	case path == "groups" && (r.Method == http.MethodGet || r.Method == http.MethodPost):
 		s.apiGroups(w, r)
 	case strings.HasPrefix(path, "groups/"):
+		if strings.Count(path, "/") != 1 {
+			writeProblem(w, r, http.StatusNotFound, "Not found", "This hfproxy API route is not implemented.")
+			return
+		}
 		s.apiGroup(w, r, strings.TrimPrefix(path, "groups/"))
 	case path == "audit-events" && r.Method == http.MethodGet:
 		s.apiAudit(w, r)
@@ -219,7 +288,12 @@ func (in settingsInput) apply(cfg config.Config) (config.Config, error) {
 		return parsed, nil
 	}
 	var err error
-	cfg.PublicURL, cfg.HFBaseURL, cfg.HFAllowedHosts = strings.TrimSpace(in.PublicURL), strings.TrimSpace(in.HFBaseURL), in.HFAllowedHosts
+	cfg.PublicURL, cfg.HFBaseURL = strings.TrimSpace(in.PublicURL), strings.TrimSpace(in.HFBaseURL)
+	var hostErr error
+	cfg.HFAllowedHosts, hostErr = config.NormalizeAllowedHosts(in.HFAllowedHosts)
+	if hostErr != nil {
+		return config.Config{}, hostErr
+	}
 	if in.ClearHFProxy {
 		cfg.HFProxyURL = ""
 	} else if proxyURL := strings.TrimSpace(in.HFProxyURL); proxyURL != "" {
@@ -379,7 +453,11 @@ func (s *Server) apiTestHub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cfg.HFToken != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.HFToken)
+		configuredBase, _ := url.Parse(s.currentConfig().HFBaseURL)
+		candidateBase, _ := url.Parse(cfg.HFBaseURL)
+		if configuredBase != nil && candidateBase != nil && strings.EqualFold(configuredBase.Hostname(), candidateBase.Hostname()) {
+			req.Header.Set("Authorization", "Bearer "+cfg.HFToken)
+		}
 	}
 	resp, err := newHFHTTPClient(cfg).Do(req)
 	if err != nil {
@@ -413,20 +491,21 @@ func (s *Server) apiStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var repos, artifacts, totalBytes, hits, misses int64
-	if err := s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM repositories WHERE deleted_at IS NULL`).Scan(&repos); err != nil {
+	visibility := `($1='admin' OR r.access_policy='public' OR (r.access_policy='allowlist' AND (EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$2) OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$2))))`
+	if err := s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM repositories r WHERE r.deleted_at IS NULL AND `+visibility, p.Role, p.ID).Scan(&repos); err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to read statistics.")
 		return
 	}
-	if err := s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN blobs b ON b.id=a.blob_id`).Scan(&artifacts, &totalBytes); err != nil {
+	if err := s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE r.deleted_at IS NULL AND `+visibility, p.Role, p.ID).Scan(&artifacts, &totalBytes); err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to read statistics.")
 		return
 	}
-	if err := s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*) FILTER(WHERE status='hit'),COUNT(*) FILTER(WHERE status='miss') FROM downloads`).Scan(&hits, &misses); err != nil {
+	if err := s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*) FILTER(WHERE d.status='hit'),COUNT(*) FILTER(WHERE d.status='miss') FROM downloads d JOIN repositories r ON r.id=d.repository_id WHERE r.deleted_at IS NULL AND `+visibility, p.Role, p.ID).Scan(&hits, &misses); err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to read statistics.")
 		return
 	}
 	var active int64
-	_ = s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM downloads WHERE status='downloading'`).Scan(&active)
+	_ = s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM downloads d JOIN repositories r ON r.id=d.repository_id WHERE d.status='downloading' AND r.deleted_at IS NULL AND `+visibility, p.Role, p.ID).Scan(&active)
 	writeJSON(w, http.StatusOK, map[string]any{"repositories": repos, "artifacts": artifacts, "cache_bytes": totalBytes, "cache_size": formatBytes(totalBytes), "cache_hits": hits, "cache_misses": misses, "hit_ratio": func() float64 {
 		if hits+misses == 0 {
 			return 0
@@ -445,8 +524,9 @@ func (s *Server) apiActiveDownloads(w http.ResponseWriter, r *http.Request) {
 		FROM downloads d JOIN repositories r ON r.id=d.repository_id
 		WHERE d.status='downloading' AND r.deleted_at IS NULL
 		AND ($1='admin' OR r.access_policy='public'
-			OR EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$2)
-			OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$2))
+			OR (r.access_policy='allowlist' AND (
+			EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$2)
+			OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$2)))
 		ORDER BY d.started_at DESC LIMIT 50`, p.Role, p.ID)
 	if err != nil {
 		writeProblem(w, r, http.StatusInternalServerError, "Database error", "Unable to read active downloads.")
@@ -483,9 +563,21 @@ func (s *Server) apiRepos(w http.ResponseWriter, r *http.Request) {
 			writeProblem(w, r, 401, "Authentication required", "Sign in to view repository policies.")
 			return
 		}
+		limit := pageLimit(r.URL.Query().Get("limit"))
+		args := []any{p.Role, p.ID, limit + 1}
+		cursorWhere := ""
+		if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+			parts, ok := decodeListCursor(cursor, 3)
+			if !ok {
+				writeProblem(w, r, http.StatusBadRequest, "Invalid cursor", "The repository cursor is invalid.")
+				return
+			}
+			cursorWhere = " AND (r.repo_type,r.repo_id,r.id) > ($3,$4,$5)"
+			args = []any{p.Role, p.ID, parts[0], parts[1], parts[2], limit + 1}
+		}
 		rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT r.id,r.repo_type,r.repo_id,r.access_policy,r.created_at,r.updated_at
-			FROM repositories r WHERE r.deleted_at IS NULL AND ($1='admin' OR r.access_policy='public' OR EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$2) OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$2))
-			ORDER BY r.repo_type,r.repo_id LIMIT 200`, p.Role, p.ID)
+			FROM repositories r WHERE r.deleted_at IS NULL AND ($1='admin' OR r.access_policy='public' OR (r.access_policy='allowlist' AND (EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$2) OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$2))))`+cursorWhere+`
+			ORDER BY r.repo_type,r.repo_id,r.id LIMIT $`+strconv.Itoa(len(args)), args...)
 		if err != nil {
 			writeProblem(w, r, 500, "Database error", "Unable to list repositories.")
 			return
@@ -499,7 +591,13 @@ func (s *Server) apiRepos(w http.ResponseWriter, r *http.Request) {
 				result = append(result, map[string]any{"id": id, "repo_type": t, "repo_id": repo, "access_policy": policy, "created_at": created, "updated_at": updated})
 			}
 		}
-		writeJSON(w, 200, map[string]any{"items": result, "limit": 200, "cursor": ""})
+		next := ""
+		if len(result) > limit {
+			last := result[limit-1]
+			next = encodeListCursor(last["repo_type"].(string), last["repo_id"].(string), last["id"].(string))
+			result = result[:limit]
+		}
+		writeJSON(w, 200, map[string]any{"items": result, "limit": limit, "cursor": r.URL.Query().Get("cursor"), "next_cursor": next})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -544,7 +642,7 @@ func (s *Server) apiRepo(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 	if len(parts) != 1 {
-		http.NotFound(w, r)
+		writeProblem(w, r, http.StatusNotFound, "Not found", "This hfproxy API route is not implemented.")
 		return
 	}
 	p, ok := s.requireAdmin(w, r)
@@ -590,7 +688,13 @@ func (s *Server) apiRepo(w http.ResponseWriter, r *http.Request, path string) {
 		s.audit(r.Context(), p.ID, "repository.policy.update", "repository", id, map[string]any{"access_policy": input.AccessPolicy})
 		writeJSON(w, 200, map[string]string{"id": id, "access_policy": input.AccessPolicy})
 	case http.MethodDelete:
-		result, err := s.db.SQL.ExecContext(r.Context(), `UPDATE repositories SET deleted_at=now(),updated_at=now() WHERE id=$1 AND deleted_at IS NULL`, id)
+		tx, err := s.db.SQL.BeginTx(r.Context(), nil)
+		if err != nil {
+			writeProblem(w, r, 500, "Database error", "Unable to delete repository.")
+			return
+		}
+		defer tx.Rollback()
+		result, err := tx.ExecContext(r.Context(), `UPDATE repositories SET deleted_at=now(),updated_at=now() WHERE id=$1 AND deleted_at IS NULL`, id)
 		if err != nil {
 			writeProblem(w, r, 500, "Database error", "Unable to delete repository.")
 			return
@@ -598,6 +702,14 @@ func (s *Server) apiRepo(w http.ResponseWriter, r *http.Request, path string) {
 		n, _ := result.RowsAffected()
 		if n == 0 {
 			writeProblem(w, r, 404, "Repository not found", "The repository does not exist.")
+			return
+		}
+		if _, err := tx.ExecContext(r.Context(), `DELETE FROM repo_grants WHERE repository_id=$1`, id); err != nil {
+			writeProblem(w, r, 500, "Database error", "Unable to remove repository grants.")
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			writeProblem(w, r, 500, "Database error", "Unable to delete repository.")
 			return
 		}
 		s.audit(r.Context(), p.ID, "repository.delete", "repository", id, nil)
@@ -642,6 +754,28 @@ func (s *Server) apiRepoGrants(w http.ResponseWriter, r *http.Request, repoID st
 			writeProblem(w, r, 400, "Invalid grant", "Provide a user or group subject and a valid permission.")
 			return
 		}
+		var repositoryExists bool
+		if err := s.db.SQL.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM repositories WHERE id=$1 AND deleted_at IS NULL)`, repoID).Scan(&repositoryExists); err != nil {
+			writeProblem(w, r, 500, "Database error", "Unable to validate the repository.")
+			return
+		}
+		if !repositoryExists {
+			writeProblem(w, r, 404, "Repository not found", "The repository does not exist.")
+			return
+		}
+		table := "users"
+		if input.SubjectType == "group" {
+			table = "groups"
+		}
+		var subjectExists bool
+		if err := s.db.SQL.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM `+table+` WHERE id=$1)`, input.SubjectID).Scan(&subjectExists); err != nil {
+			writeProblem(w, r, 500, "Database error", "Unable to validate the grant subject.")
+			return
+		}
+		if !subjectExists {
+			writeProblem(w, r, 404, "Grant subject not found", "The selected user or group does not exist.")
+			return
+		}
 		_, err := s.db.SQL.ExecContext(r.Context(), `INSERT INTO repo_grants(repository_id,subject_type,subject_id,permission) VALUES($1,$2,$3,$4) ON CONFLICT(repository_id,subject_type,subject_id) DO UPDATE SET permission=EXCLUDED.permission`, repoID, input.SubjectType, input.SubjectID, input.Permission)
 		if err != nil {
 			writeProblem(w, r, 500, "Database error", "Unable to save grant.")
@@ -684,11 +818,12 @@ func (s *Server) apiCacheEntries(w http.ResponseWriter, r *http.Request) {
 	}
 	repoFilter := r.URL.Query().Get("repo_id")
 	pathFilter := r.URL.Query().Get("path")
+	pathPattern := escapeLikePattern(pathFilter)
 	query := `SELECT a.id,r.repo_type,r.repo_id,a.commit_sha,a.path,b.size_bytes,b.sha256,a.etag,a.cached_at,a.last_accessed_at
 		FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id
-		WHERE r.deleted_at IS NULL AND ($1='admin' OR r.access_policy='public' OR EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$2) OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$2))
-		AND ($3='' OR r.repo_id=$3) AND ($4='' OR a.path ILIKE '%'||$4||'%') ORDER BY a.cached_at DESC LIMIT $5`
-	rows, err := s.db.SQL.QueryContext(r.Context(), query, p.Role, p.ID, repoFilter, pathFilter, limit)
+		WHERE r.deleted_at IS NULL AND ($1='admin' OR r.access_policy='public' OR (r.access_policy='allowlist' AND (EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$2) OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$2))))
+		AND ($3='' OR r.repo_id=$3) AND ($4='' OR a.path ILIKE '%'||$4||'%' ESCAPE '\\') ORDER BY a.cached_at DESC LIMIT $5`
+	rows, err := s.db.SQL.QueryContext(r.Context(), query, p.Role, p.ID, repoFilter, pathPattern, limit)
 	if err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to search cache.")
 		return
@@ -707,12 +842,16 @@ func (s *Server) apiCacheEntries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiCacheEntry(w http.ResponseWriter, r *http.Request, id string) {
-	if !strings.HasSuffix(id, "/purge") || r.Method != http.MethodPost {
-		http.NotFound(w, r)
+	if !strings.HasSuffix(id, "/purge") {
+		writeProblem(w, r, http.StatusNotFound, "Not found", "This hfproxy API route is not implemented.")
+		return
+	}
+	if r.Method != http.MethodPost {
+		methodNotAllowedWith(w, http.MethodPost)
 		return
 	}
 	id = strings.TrimSuffix(id, "/purge")
-	p, ok := s.requireAdmin(w, r)
+	p, ok := s.requireOperator(w, r)
 	if !ok {
 		return
 	}
@@ -729,7 +868,7 @@ func (s *Server) apiCacheEntry(w http.ResponseWriter, r *http.Request, id string
 }
 
 func (s *Server) apiPurge(w http.ResponseWriter, r *http.Request) {
-	p, ok := s.requireAdmin(w, r)
+	p, ok := s.requireOperator(w, r)
 	if !ok {
 		return
 	}
@@ -741,9 +880,10 @@ func (s *Server) apiPurge(w http.ResponseWriter, r *http.Request) {
 	confirm := r.URL.Query().Get("confirm") == "true" || r.FormValue("confirm") == "true"
 	repoID := r.URL.Query().Get("repo_id")
 	path := r.URL.Query().Get("path")
+	pathPattern := escapeLikePattern(path)
 	var count int64
 	var size int64
-	err := s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%')`, repoID, path).Scan(&count, &size)
+	err := s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%' ESCAPE '\\')`, repoID, pathPattern).Scan(&count, &size)
 	if err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to estimate purge impact.")
 		return
@@ -752,7 +892,7 @@ func (s *Server) apiPurge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"dry_run": true, "entries": count, "bytes": size, "size": formatBytes(size), "confirmation_required": true})
 		return
 	}
-	rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT a.id FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%')`, repoID, path)
+	rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT a.id FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%' ESCAPE '\\')`, repoID, pathPattern)
 	if err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to find cache entries.")
 		return
@@ -780,29 +920,22 @@ func (s *Server) purgeArtifact(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	var key, blobID string
-	err = tx.QueryRowContext(ctx, `SELECT b.storage_key,b.id FROM artifacts a JOIN blobs b ON b.id=a.blob_id WHERE a.id=$1 FOR UPDATE OF a`, id).Scan(&key, &blobID)
+	var blobID string
+	err = tx.QueryRowContext(ctx, `SELECT b.id FROM artifacts a JOIN blobs b ON b.id=a.blob_id WHERE a.id=$1 FOR UPDATE OF a`, id).Scan(&blobID)
 	if err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM artifacts WHERE id=$1`, id); err != nil {
 		return err
 	}
-	var refs int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE blob_id=$1`, blobID).Scan(&refs); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE blobs SET orphaned_at=now() WHERE id=$1`, blobID); err != nil {
 		return err
-	}
-	if refs == 0 {
-		if _, err = tx.ExecContext(ctx, `DELETE FROM blobs WHERE id=$1`, blobID); err != nil {
-			return err
-		}
 	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	if refs == 0 {
-		return s.currentStorage().Delete(ctx, key)
-	}
+	// Keep the blob row/object as an orphan until a grace-period GC removes it.
+	// This prevents a purge racing a re-download from deleting the new object.
 	return nil
 }
 
@@ -863,7 +996,19 @@ func (s *Server) apiUsers(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT id,username,email,display_name,role,status,created_at FROM users ORDER BY username LIMIT 200`)
+	limit := pageLimit(r.URL.Query().Get("limit"))
+	args := []any{limit + 1}
+	where := ""
+	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+		parts, ok := decodeListCursor(cursor, 2)
+		if !ok {
+			writeProblem(w, r, http.StatusBadRequest, "Invalid cursor", "The user cursor is invalid.")
+			return
+		}
+		where = "WHERE (username,id) > ($1,$2)"
+		args = []any{parts[0], parts[1], limit + 1}
+	}
+	rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT id,username,email,display_name,role,status,created_at FROM users `+where+` ORDER BY username,id LIMIT $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to list users.")
 		return
@@ -877,7 +1022,13 @@ func (s *Server) apiUsers(w http.ResponseWriter, r *http.Request) {
 			items = append(items, map[string]any{"id": id, "username": user, "email": email, "display_name": name, "role": role, "status": status, "created_at": created})
 		}
 	}
-	writeJSON(w, 200, map[string]any{"items": items, "limit": 200, "cursor": ""})
+	next := ""
+	if len(items) > limit {
+		last := items[limit-1]
+		items = items[:limit]
+		next = encodeListCursor(last["username"].(string), last["id"].(string))
+	}
+	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "cursor": r.URL.Query().Get("cursor"), "next_cursor": next})
 }
 
 func validLocalUsername(username string) bool {
@@ -921,7 +1072,32 @@ func (s *Server) apiUserPatch(w http.ResponseWriter, r *http.Request, id string)
 		writeProblem(w, r, 400, "Empty update", "Set role or status.")
 		return
 	}
-	result, err := s.db.SQL.ExecContext(r.Context(), `UPDATE users SET role=COALESCE(NULLIF($2,''),role),status=COALESCE(NULLIF($3,''),status),updated_at=now() WHERE id=$1`, id, input.Role, input.Status)
+	tx, err := s.db.SQL.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeProblem(w, r, 500, "Database error", "Unable to update user.")
+		return
+	}
+	defer tx.Rollback()
+	var currentRole, currentStatus string
+	if err := tx.QueryRowContext(r.Context(), `SELECT role,status FROM users WHERE id=$1 FOR UPDATE`, id).Scan(&currentRole, &currentStatus); errors.Is(err, sql.ErrNoRows) {
+		writeProblem(w, r, 404, "User not found", "The user does not exist.")
+		return
+	} else if err != nil {
+		writeProblem(w, r, 500, "Database error", "Unable to update user.")
+		return
+	}
+	if currentRole == "admin" && currentStatus == "active" && (input.Role == "reader" || input.Role == "operator" || input.Status == "disabled") {
+		var activeAdmins int
+		if err := tx.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM users WHERE role='admin' AND status='active'`).Scan(&activeAdmins); err != nil {
+			writeProblem(w, r, 500, "Database error", "Unable to validate administrator safety.")
+			return
+		}
+		if activeAdmins <= 1 {
+			writeProblem(w, r, http.StatusConflict, "Last administrator", "At least one active administrator must remain.")
+			return
+		}
+	}
+	result, err := tx.ExecContext(r.Context(), `UPDATE users SET role=COALESCE(NULLIF($2,''),role),status=COALESCE(NULLIF($3,''),status),updated_at=now() WHERE id=$1`, id, input.Role, input.Status)
 	if err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to update user.")
 		return
@@ -932,8 +1108,12 @@ func (s *Server) apiUserPatch(w http.ResponseWriter, r *http.Request, id string)
 		return
 	}
 	if input.Status == "disabled" {
-		_, _ = s.db.SQL.ExecContext(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
-		_, _ = s.db.SQL.ExecContext(r.Context(), `UPDATE access_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, id)
+		_, _ = tx.ExecContext(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
+		_, _ = tx.ExecContext(r.Context(), `UPDATE access_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, id)
+	}
+	if err := tx.Commit(); err != nil {
+		writeProblem(w, r, 500, "Database error", "Unable to update user.")
+		return
 	}
 	s.audit(r.Context(), p.ID, "user.update", "user", id, map[string]any{"role": input.Role, "status": input.Status})
 	writeJSON(w, 200, map[string]string{"id": id, "role": input.Role, "status": input.Status})
@@ -944,7 +1124,19 @@ func (s *Server) apiGroups(w http.ResponseWriter, r *http.Request) {
 		if _, ok := s.requireAdmin(w, r); !ok {
 			return
 		}
-		rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT g.id,g.name,g.source,COUNT(m.user_id) FROM groups g LEFT JOIN group_members m ON m.group_id=g.id GROUP BY g.id ORDER BY g.name LIMIT 200`)
+		limit := pageLimit(r.URL.Query().Get("limit"))
+		args := []any{limit + 1}
+		where := ""
+		if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+			parts, ok := decodeListCursor(cursor, 2)
+			if !ok {
+				writeProblem(w, r, http.StatusBadRequest, "Invalid cursor", "The group cursor is invalid.")
+				return
+			}
+			where = "WHERE (g.name,g.id) > ($1,$2)"
+			args = []any{parts[0], parts[1], limit + 1}
+		}
+		rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT g.id,g.name,g.source,COUNT(m.user_id) FROM groups g LEFT JOIN group_members m ON m.group_id=g.id `+where+` GROUP BY g.id ORDER BY g.name,g.id LIMIT $`+strconv.Itoa(len(args)), args...)
 		if err != nil {
 			writeProblem(w, r, 500, "Database error", "Unable to list groups.")
 			return
@@ -958,7 +1150,13 @@ func (s *Server) apiGroups(w http.ResponseWriter, r *http.Request) {
 				items = append(items, map[string]any{"id": id, "name": name, "source": source, "members": members})
 			}
 		}
-		writeJSON(w, 200, map[string]any{"items": items})
+		next := ""
+		if len(items) > limit {
+			last := items[limit-1]
+			items = items[:limit]
+			next = encodeListCursor(last["name"].(string), last["id"].(string))
+		}
+		writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "cursor": r.URL.Query().Get("cursor"), "next_cursor": next})
 		return
 	}
 	p, ok := s.requireAdmin(w, r)
@@ -985,12 +1183,25 @@ func (s *Server) apiGroups(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(r.Context(), `INSERT INTO groups(id,name) VALUES($1,$2)`, id, input.Name); err != nil {
-		writeProblem(w, r, 409, "Group exists", "A group with this name already exists.")
+		if isUniqueViolation(err) {
+			writeProblem(w, r, 409, "Group exists", "A group with this name already exists.")
+		} else {
+			writeProblem(w, r, 500, "Database error", "Unable to create group.")
+		}
 		return
 	}
+	seenMembers := make(map[string]struct{}, len(input.Members))
 	for _, member := range input.Members {
+		if _, seen := seenMembers[member]; seen {
+			continue
+		}
+		seenMembers[member] = struct{}{}
 		if _, err = tx.ExecContext(r.Context(), `INSERT INTO group_members(group_id,user_id) VALUES($1,$2)`, id, member); err != nil {
-			writeProblem(w, r, 400, "Invalid member", "A member ID is invalid.")
+			if isForeignKeyViolation(err) {
+				writeProblem(w, r, 400, "Invalid member", "A member ID is invalid.")
+			} else {
+				writeProblem(w, r, 500, "Database error", "Unable to add the group member.")
+			}
 			return
 		}
 	}
@@ -1073,7 +1284,11 @@ func (s *Server) apiGroup(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	if input.Name != nil {
 		if _, err := tx.ExecContext(r.Context(), `UPDATE groups SET name=$2 WHERE id=$1`, id, name); err != nil {
-			writeProblem(w, r, http.StatusConflict, "Group exists", "A group with this name already exists.")
+			if isUniqueViolation(err) {
+				writeProblem(w, r, http.StatusConflict, "Group exists", "A group with this name already exists.")
+			} else {
+				writeProblem(w, r, http.StatusInternalServerError, "Database error", "Unable to update the group.")
+			}
 			return
 		}
 		currentName = name
@@ -1085,7 +1300,11 @@ func (s *Server) apiGroup(w http.ResponseWriter, r *http.Request, id string) {
 		}
 		for _, memberID := range *input.Members {
 			if _, err := tx.ExecContext(r.Context(), `INSERT INTO group_members(group_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, id, memberID); err != nil {
-				writeProblem(w, r, http.StatusBadRequest, "Invalid member", "A member ID is invalid.")
+				if isForeignKeyViolation(err) {
+					writeProblem(w, r, http.StatusBadRequest, "Invalid member", "A member ID is invalid.")
+				} else {
+					writeProblem(w, r, http.StatusInternalServerError, "Database error", "Unable to add the group member.")
+				}
 				return
 			}
 		}
@@ -1105,7 +1324,29 @@ func (s *Server) apiAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := pageLimit(r.URL.Query().Get("limit"))
-	rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT e.id,COALESCE(u.username,''),e.action,e.target_type,e.target_id,e.metadata_json,e.request_id,e.created_at FROM audit_events e LEFT JOIN users u ON u.id=e.actor_user_id ORDER BY e.created_at DESC LIMIT $1`, limit)
+	cursor := r.URL.Query().Get("cursor")
+	args := []any{limit + 1}
+	where := ""
+	if cursor != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(cursor)
+		if err != nil {
+			writeProblem(w, r, http.StatusBadRequest, "Invalid cursor", "The audit cursor is invalid.")
+			return
+		}
+		parts := strings.SplitN(string(decoded), "|", 2)
+		if len(parts) != 2 {
+			writeProblem(w, r, http.StatusBadRequest, "Invalid cursor", "The audit cursor is invalid.")
+			return
+		}
+		created, err := time.Parse(time.RFC3339Nano, parts[0])
+		if err != nil || parts[1] == "" {
+			writeProblem(w, r, http.StatusBadRequest, "Invalid cursor", "The audit cursor is invalid.")
+			return
+		}
+		where = "WHERE (e.created_at,e.id) < ($1,$2)"
+		args = []any{created, parts[1], limit + 1}
+	}
+	rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT e.id,COALESCE(u.username,''),e.action,e.target_type,e.target_id,e.metadata_json,e.request_id,e.created_at FROM audit_events e LEFT JOIN users u ON u.id=e.actor_user_id `+where+` ORDER BY e.created_at DESC,e.id DESC LIMIT $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to read audit events.")
 		return
@@ -1121,7 +1362,15 @@ func (s *Server) apiAudit(w http.ResponseWriter, r *http.Request) {
 			items = append(items, map[string]any{"id": id, "actor": actor, "action": action, "target_type": targetType, "target_id": targetID, "metadata": decoded, "request_id": requestID, "created_at": created})
 		}
 	}
-	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "cursor": ""})
+	nextCursor := ""
+	if len(items) > limit {
+		last := items[limit-1]
+		items = items[:limit]
+		if created, ok := last["created_at"].(time.Time); ok {
+			nextCursor = base64.RawURLEncoding.EncodeToString([]byte(created.UTC().Format(time.RFC3339Nano) + "|" + last["id"].(string)))
+		}
+	}
+	writeJSON(w, 200, map[string]any{"items": items, "limit": limit, "cursor": cursor, "next_cursor": nextCursor})
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
@@ -1152,4 +1401,50 @@ func pageLimit(value string) int {
 		return 200
 	}
 	return limit
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+}
+
+func encodeListCursor(parts ...string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strings.Join(parts, "|")))
+}
+
+func decodeListCursor(value string, count int) ([]string, bool) {
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return nil, false
+	}
+	parts := strings.Split(string(decoded), "|")
+	if len(parts) != count {
+		return nil, false
+	}
+	for _, part := range parts {
+		if part == "" || strings.ContainsAny(part, "\r\n") {
+			return nil, false
+		}
+	}
+	return parts, true
+}
+
+func escapeLikePattern(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	return strings.ReplaceAll(value, `_`, `\_`)
+}
+
+func hasScope(p *Principal, scope string) bool {
+	for _, candidate := range p.Scopes {
+		if candidate == scope {
+			return true
+		}
+	}
+	return false
 }

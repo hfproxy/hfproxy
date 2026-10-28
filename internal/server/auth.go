@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"net"
 	"net/http"
 	"net/mail"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +59,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.renderLogin(w, data, http.StatusBadRequest)
 		return
 	}
+	if retryAfter, ok := s.allowLoginAttempt(r, r.FormValue("username")); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeProblem(w, r, http.StatusTooManyRequests, "Too many login attempts", "Retry later before attempting to sign in again.")
+		return
+	}
 	csrfCookie, err := r.Cookie("hfproxy_login_csrf")
 	if err != nil || !constantEqual(csrfCookie.Value, r.FormValue("csrf_token")) {
 		data.Error = "La requête a expiré. Rechargez la page puis réessayez."
@@ -69,9 +76,23 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var authErr error
 	provider := "local"
 	if s.currentConfig().AuthMode == "local" {
+		s.loginMu.Lock()
+		if s.loginHashSlots == nil {
+			s.loginHashSlots = make(chan struct{}, 4)
+		}
+		slots := s.loginHashSlots
+		s.loginMu.Unlock()
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		case <-r.Context().Done():
+			return
+		}
 		var storedHash, status string
 		authErr = s.db.SQL.QueryRowContext(r.Context(), `SELECT id,password_hash,status FROM users WHERE username=$1`, username).Scan(&userID, &storedHash, &status)
-		if authErr == nil && (status != "active" || !verifyPassword(storedHash, password)) {
+		if authErr != nil {
+			_ = verifyPassword(dummyPasswordHash, password)
+		} else if status != "active" || !verifyPassword(storedHash, password) {
 			authErr = sql.ErrNoRows
 		}
 	} else {
@@ -148,7 +169,7 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	state := oidcState{State: randomSecret(24), Nonce: randomSecret(24), Verifier: oauth2.GenerateVerifier(), Expires: time.Now().Add(10 * time.Minute)}
 	encoded, _ := json.Marshal(state)
-	http.SetCookie(w, &http.Cookie{Name: "hfproxy_oidc", Value: base64.RawURLEncoding.EncodeToString(encoded), Path: "/auth/callback", HttpOnly: true, Secure: strings.HasPrefix(s.currentConfig().OIDCRedirectURL, "https://"), SameSite: http.SameSiteLaxMode, MaxAge: 600})
+	http.SetCookie(w, &http.Cookie{Name: "hfproxy_oidc", Value: base64.RawURLEncoding.EncodeToString(encoded), Path: "/", HttpOnly: true, Secure: strings.HasPrefix(s.currentConfig().OIDCRedirectURL, "https://"), SameSite: http.SameSiteLaxMode, MaxAge: 600})
 	url := s.currentOIDCConfig().AuthCodeURL(state.State, oauth2.S256ChallengeOption(state.Verifier), oauth2.SetAuthURLParam("nonce", state.Nonce))
 	http.Redirect(w, r, url, http.StatusFound)
 }
@@ -162,7 +183,7 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	defer http.SetCookie(w, &http.Cookie{Name: "hfproxy_oidc", Value: "", Path: "/auth/callback", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.currentConfig().OIDCRedirectURL, "https://"), SameSite: http.SameSiteLaxMode})
+	defer http.SetCookie(w, &http.Cookie{Name: "hfproxy_oidc", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.currentConfig().OIDCRedirectURL, "https://"), SameSite: http.SameSiteLaxMode})
 	cookie, err := r.Cookie("hfproxy_oidc")
 	if err != nil {
 		http.Redirect(w, r, "/login?error=invalid_state", http.StatusSeeOther)
@@ -275,7 +296,7 @@ func (s *Server) authenticateLDAP(ctx context.Context, username, password string
 		return "", fmt.Errorf("LDAP configuration is invalid")
 	}
 	if parsedURL.Scheme == "ldap" && s.currentConfig().LDAPStartTLS {
-		if err := conn.StartTLS(&tls.Config{MinVersion: tls.VersionTLS12}); err != nil {
+		if err := conn.StartTLS(&tls.Config{MinVersion: tls.VersionTLS12, ServerName: parsedURL.Hostname()}); err != nil {
 			return "", fmt.Errorf("LDAP StartTLS failed")
 		}
 	}
@@ -383,6 +404,41 @@ func HashPassword(password string) (string, error) {
 	hash := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, 32)
 	return fmt.Sprintf("argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", memory, iterations, parallelism,
 		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(hash)), nil
+}
+
+var dummyPasswordHash = func() string {
+	hash, err := HashPassword("hfproxy-dummy-password")
+	if err != nil {
+		panic(err)
+	}
+	return hash
+}()
+
+func (s *Server) allowLoginAttempt(r *http.Request, username string) (int, bool) {
+	host := r.RemoteAddr
+	if parsed, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = parsed
+	}
+	keys := []string{"ip:" + host, "user:" + strings.ToLower(strings.TrimSpace(username))}
+	now := time.Now()
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	if s.loginBuckets == nil {
+		s.loginBuckets = make(map[string]loginBucket)
+	}
+	for _, key := range keys {
+		bucket := s.loginBuckets[key]
+		if bucket.window.IsZero() || now.Sub(bucket.window) >= time.Minute {
+			bucket = loginBucket{window: now}
+		}
+		if bucket.count >= 10 {
+			remaining := int(time.Until(bucket.window.Add(time.Minute)).Seconds()) + 1
+			return remaining, false
+		}
+		bucket.count++
+		s.loginBuckets[key] = bucket
+	}
+	return 0, true
 }
 
 func verifyPassword(encoded, password string) bool {
