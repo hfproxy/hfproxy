@@ -44,7 +44,7 @@ func (s *Server) hubAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	copyHubHeaders(w, resp.Header)
+	copyHubHeaders(w, resp.Header, r)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		s.hubStatus(w, r, resp.StatusCode, resp.Header)
 		return
@@ -72,9 +72,6 @@ func parseHubAPIPath(escaped string, incoming url.Values) (hubMetadataPath, stri
 	}
 	decoded := make([]string, len(parts))
 	for i, part := range parts {
-		if strings.Contains(strings.ToLower(part), "%2f") || strings.Contains(strings.ToLower(part), "%5c") {
-			return hubMetadataPath{}, "", nil, fmt.Errorf("encoded separators are not allowed")
-		}
 		value, err := url.PathUnescape(part)
 		if err != nil || value == "." || value == ".." || hasControl(value) {
 			return hubMetadataPath{}, "", nil, fmt.Errorf("invalid route path")
@@ -88,6 +85,11 @@ func parseHubAPIPath(escaped string, incoming url.Values) (hubMetadataPath, stri
 		repoEnd = 4
 	}
 	repoID := strings.Join(decoded[2:repoEnd], "/")
+	for _, part := range decoded[2:repoEnd] {
+		if strings.ContainsAny(part, "/\\") {
+			return hubMetadataPath{}, "", nil, fmt.Errorf("encoded separators are not allowed in repository identifiers")
+		}
+	}
 	if !validRepoID(repoID) {
 		return hubMetadataPath{}, "", nil, fmt.Errorf("repository identifier is invalid")
 	}
@@ -103,8 +105,10 @@ func parseHubAPIPath(escaped string, incoming url.Values) (hubMetadataPath, stri
 			}
 			if len(suffix) > 2 {
 				for _, part := range suffix[2:] {
-					if part == "" || part == "." || part == ".." || strings.Contains(part, "\\") {
-						return hubMetadataPath{}, "", nil, fmt.Errorf("tree path is invalid")
+					for _, segment := range strings.Split(part, "/") {
+						if segment == "" || segment == "." || segment == ".." || strings.ContainsAny(segment, "\\\x00") || hasControl(segment) {
+							return hubMetadataPath{}, "", nil, fmt.Errorf("tree path is invalid")
+						}
 					}
 				}
 			}
@@ -131,10 +135,45 @@ func parseHubAPIPath(escaped string, incoming url.Values) (hubMetadataPath, stri
 	return hubMetadataPath{RepoType: decoded[1], RepoID: repoID}, upstreamPath, query, nil
 }
 
-func copyHubHeaders(w http.ResponseWriter, headers http.Header) {
-	for _, key := range []string{"Content-Type", "Content-Length", "ETag", "Last-Modified", "Cache-Control", "X-Repo-Commit", "X-Request-Id", "X-Total-Count", "Link"} {
+func copyHubHeaders(w http.ResponseWriter, headers http.Header, r *http.Request) {
+	for _, key := range []string{"Content-Type", "Content-Length", "ETag", "Last-Modified", "Cache-Control", "X-Repo-Commit", "X-Request-Id", "X-Total-Count"} {
 		if value := headers.Get(key); value != "" {
 			w.Header().Set(key, value)
 		}
 	}
+	if link := rewritePaginationLink(headers.Get("Link"), r); link != "" {
+		w.Header().Set("Link", link)
+	}
+}
+
+func rewritePaginationLink(value string, r *http.Request) string {
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, ",")
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		start, end := strings.IndexByte(part, '<'), strings.IndexByte(part, '>')
+		if start < 0 || end <= start {
+			continue
+		}
+		target := part[start+1 : end]
+		u, err := url.Parse(target)
+		if err != nil {
+			continue
+		}
+		if u.IsAbs() {
+			if !strings.HasPrefix(u.Path, "/api/") {
+				continue
+			}
+			scheme := "http"
+			if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+				scheme = "https"
+			}
+			u.Scheme, u.Host = scheme, r.Host
+			part = part[:start+1] + u.String() + part[end:]
+		}
+		kept = append(kept, strings.TrimSpace(part))
+	}
+	return strings.Join(kept, ", ")
 }

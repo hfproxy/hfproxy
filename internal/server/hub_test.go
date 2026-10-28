@@ -1,8 +1,13 @@
 package server
 
 import (
+	"database/sql"
+	"io"
+	"net/netip"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseResolvePath(t *testing.T) {
@@ -54,11 +59,11 @@ func TestParseByteRange(t *testing.T) {
 		{name: "open end", value: "bytes=5-", start: 5, end: 9, partial: true, valid: true},
 		{name: "suffix", value: "bytes=-3", start: 7, end: 9, partial: true, valid: true},
 		{name: "clamp end", value: "bytes=8-99", start: 8, end: 9, partial: true, valid: true},
-		{name: "multiple ranges unsupported", value: "bytes=0-1,4-5", valid: false},
+		{name: "multiple ranges ignored", value: "bytes=0-1,4-5", valid: true},
 		{name: "start beyond object", value: "bytes=10-", valid: false},
 		{name: "reversed range", value: "bytes=8-3", valid: false},
 		{name: "zero suffix", value: "bytes=-0", valid: false},
-		{name: "unknown unit", value: "items=0-1", valid: false},
+		{name: "unknown unit ignored", value: "items=0-1", valid: true},
 	}
 
 	for _, tt := range tests {
@@ -128,6 +133,89 @@ func TestIfNoneMatch(t *testing.T) {
 				t.Errorf("ifNoneMatch(%q, %q) = %v, want %v", tt.header, tt.etag, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIfRangeRequiresStrongETag(t *testing.T) {
+	a := artifact{ETag: `"abc"`, LastMod: sql.NullTime{}}
+	if ifRangeMatches(`W/"abc"`, a) {
+		t.Fatal("weak If-Range ETag must not match")
+	}
+	if !ifRangeMatches(`"abc"`, a) {
+		t.Fatal("strong If-Range ETag should match")
+	}
+	if ifRangeMatches(`"abc"`, artifact{ETag: `W/"abc"`, LastMod: sql.NullTime{}}) {
+		t.Fatal("strong If-Range must not match a weak artifact ETag")
+	}
+}
+
+func TestCacheMissSingleflight(t *testing.T) {
+	s := &Server{}
+	leader, done := s.joinCacheMiss("repo|commit|file")
+	if !leader {
+		t.Fatal("first requester should become the cache-miss leader")
+	}
+	follower, followerDone := s.joinCacheMiss("repo|commit|file")
+	if follower || followerDone != done {
+		t.Fatal("second requester should wait for the existing cache miss")
+	}
+	s.finishCacheMiss("repo|commit|file")
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cache-miss followers were not released")
+	}
+}
+
+func TestImmutableAssetRequiresHash(t *testing.T) {
+	if !immutableAsset("main-12345678.js") {
+		t.Fatal("hashed build asset should be immutable")
+	}
+	if immutableAsset("favicon.ico") || immutableAsset("logo.svg") {
+		t.Fatal("unhashed public assets must not be immutable")
+	}
+}
+
+func TestEgressIPPolicyRejectsSpecialAndEmbeddedPrivateIPs(t *testing.T) {
+	for _, value := range []string{"100.100.100.200", "198.18.0.1", "64:ff9b::c000:0201", "2002:0a00:0001::1"} {
+		ip, err := netip.ParseAddr(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if egressIPAllowed(ip, false) {
+			t.Errorf("egressIPAllowed(%s) accepted a blocked destination", value)
+		}
+	}
+}
+
+func TestListCursorRoundTrip(t *testing.T) {
+	cursor := encodeListCursor("models", "org/model", "repo-id")
+	parts, ok := decodeListCursor(cursor, 3)
+	if !ok || strings.Join(parts, "|") != "models|org/model|repo-id" {
+		t.Fatalf("cursor round trip = %#v, %v", parts, ok)
+	}
+	if _, ok := decodeListCursor("not-a-valid-cursor", 2); ok {
+		t.Fatal("malformed cursor was accepted")
+	}
+}
+
+func TestIdleBodyClosesAStalledRead(t *testing.T) {
+	reader, writer := io.Pipe()
+	body := newIdleBody(reader, 10*time.Millisecond)
+	defer writer.Close()
+	defer body.Close()
+	result := make(chan error, 1)
+	go func() {
+		_, err := body.Read(make([]byte, 1))
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("stalled read unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("idle body did not interrupt the stalled read")
 	}
 }
 

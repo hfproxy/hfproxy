@@ -44,12 +44,17 @@ func (e *upstreamStatusError) Error() string {
 	return fmt.Sprintf("Hugging Face returned HTTP %d while downloading a file", e.status)
 }
 
-func (s *Server) downloadResumable(ctx context.Context, objectStore *storage.S3, downloadID, repositoryID, commit string, parsed resolvePath, total int64, etag, contentType string) (*os.File, string, *downloadResume, error) {
+func (s *Server) downloadResumable(ctx context.Context, objectStore *storage.S3, downloadID, repositoryID, commit string, parsed resolvePath, total int64, etag, contentType string, stream io.Writer) (*os.File, string, *downloadResume, error) {
 	resume, err := s.loadDownloadResume(ctx, objectStore, repositoryID, commit, parsed.FilePath, total, etag, contentType)
 	if err != nil {
 		return nil, "", nil, err
 	}
 	_, _ = s.db.SQL.ExecContext(ctx, `UPDATE downloads SET bytes=$2 WHERE id=$1 AND status='downloading'`, downloadID, resume.CompletedBytes)
+	if stream != nil && resume.CompletedBytes > 0 {
+		if err := s.streamCompletedResume(ctx, objectStore, resume, stream); err != nil {
+			return nil, "", resume, err
+		}
+	}
 
 	for resume.CompletedBytes < resume.TotalSize {
 		start := resume.CompletedBytes
@@ -89,7 +94,7 @@ func (s *Server) downloadResumable(ctx context.Context, objectStore *storage.S3,
 					return nil, "", resume, err
 				}
 			}
-			err = s.saveFullDownloadResponse(ctx, objectStore, downloadID, resume, response.Body)
+			err = s.saveFullDownloadResponse(ctx, objectStore, downloadID, resume, response.Body, stream)
 			response.Body.Close()
 			if err != nil {
 				return nil, "", resume, err
@@ -123,7 +128,7 @@ func (s *Server) downloadResumable(ctx context.Context, objectStore *storage.S3,
 				return nil, "", resume, err
 			}
 		}
-		err = s.saveDownloadChunk(ctx, objectStore, downloadID, resume, response.Body, start, end-start+1)
+		err = s.saveDownloadChunk(ctx, objectStore, downloadID, resume, response.Body, start, end-start+1, stream)
 		response.Body.Close()
 		if err != nil {
 			return nil, "", resume, err
@@ -195,13 +200,13 @@ func (s *Server) updateDownloadResumeETag(ctx context.Context, resume *downloadR
 	return nil
 }
 
-func (s *Server) saveFullDownloadResponse(ctx context.Context, objectStore *storage.S3, downloadID string, resume *downloadResume, body io.Reader) error {
+func (s *Server) saveFullDownloadResponse(ctx context.Context, objectStore *storage.S3, downloadID string, resume *downloadResume, body io.Reader, stream io.Writer) error {
 	for resume.CompletedBytes < resume.TotalSize {
 		length := resume.ChunkSize
 		if remaining := resume.TotalSize - resume.CompletedBytes; remaining < length {
 			length = remaining
 		}
-		if err := s.saveDownloadChunk(ctx, objectStore, downloadID, resume, body, resume.CompletedBytes, length); err != nil {
+		if err := s.saveDownloadChunk(ctx, objectStore, downloadID, resume, body, resume.CompletedBytes, length, stream); err != nil {
 			return err
 		}
 	}
@@ -219,7 +224,7 @@ func (s *Server) saveFullDownloadResponse(ctx context.Context, objectStore *stor
 	return nil
 }
 
-func (s *Server) saveDownloadChunk(ctx context.Context, objectStore *storage.S3, downloadID string, resume *downloadResume, body io.Reader, offset, length int64) error {
+func (s *Server) saveDownloadChunk(ctx context.Context, objectStore *storage.S3, downloadID string, resume *downloadResume, body io.Reader, offset, length int64, stream io.Writer) error {
 	tmp, err := os.CreateTemp("", "hfproxy-part-*")
 	if err != nil {
 		return fmt.Errorf("create resumable download block: %w", err)
@@ -229,7 +234,11 @@ func (s *Server) saveDownloadChunk(ctx context.Context, objectStore *storage.S3,
 		_ = tmp.Close()
 		_ = os.Remove(name)
 	}()
-	progress := &downloadProgressWriter{ctx: ctx, db: s.db.SQL, id: downloadID, baseBytes: offset, destination: tmp, lastPersist: time.Now()}
+	destination := io.Writer(tmp)
+	if stream != nil {
+		destination = io.MultiWriter(tmp, stream)
+	}
+	progress := &downloadProgressWriter{ctx: ctx, db: s.db.SQL, id: downloadID, baseBytes: offset, destination: destination, lastPersist: time.Now()}
 	written, err := io.CopyN(progress, body, length)
 	if err != nil || written != length {
 		return fmt.Errorf("Hub transfer stopped before the current block completed")
@@ -249,6 +258,25 @@ func (s *Server) saveDownloadChunk(ctx context.Context, objectStore *storage.S3,
 		return fmt.Errorf("resumable download progress changed unexpectedly")
 	}
 	resume.CompletedBytes = offset + length
+	return nil
+}
+
+func (s *Server) streamCompletedResume(ctx context.Context, objectStore *storage.S3, resume *downloadResume, stream io.Writer) error {
+	for offset := int64(0); offset < resume.CompletedBytes; offset += resume.ChunkSize {
+		length := resume.ChunkSize
+		if remaining := resume.CompletedBytes - offset; remaining < length {
+			length = remaining
+		}
+		out, err := objectStore.Get(ctx, objectStore.PartialKey(resume.ID, int(offset/resume.ChunkSize)), "")
+		if err != nil {
+			return fmt.Errorf("read a persisted download block: %w", err)
+		}
+		written, copyErr := io.CopyN(stream, out.Body, length)
+		closeErr := out.Body.Close()
+		if copyErr != nil || closeErr != nil || written != length {
+			return fmt.Errorf("stream a persisted download block")
+		}
+	}
 	return nil
 }
 
