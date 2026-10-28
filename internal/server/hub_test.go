@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"io"
+	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"testing"
@@ -43,6 +44,22 @@ func TestParseResolvePath(t *testing.T) {
 				t.Errorf("parseResolvePath() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIssue104CacheHitHeadersPreserveLFSIdentity(t *testing.T) {
+	digest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const size = int64(1234)
+	rec := httptest.NewRecorder()
+	(&Server{}).setArtifactHeaders(rec, artifact{Commit: "0123456789abcdef0123456789abcdef01234567", ETag: `"` + digest + `"`, Size: size}, nil)
+	if got := rec.Header().Get("ETag"); got != `"`+digest+`"` {
+		t.Fatalf("ETag = %q, want LFS digest", got)
+	}
+	if got := rec.Header().Get("X-Linked-Etag"); got != `"`+digest+`"` {
+		t.Fatalf("X-Linked-Etag = %q, want LFS digest", got)
+	}
+	if got := rec.Header().Get("X-Linked-Size"); got != "1234" {
+		t.Fatalf("X-Linked-Size = %q, want 1234", got)
 	}
 }
 
