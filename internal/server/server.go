@@ -40,23 +40,47 @@ type runtimeState struct {
 }
 
 type Server struct {
-	runtime      atomic.Pointer[runtimeState]
-	db           *db.Store
-	logger       *slog.Logger
-	preloadsMu   sync.RWMutex
-	preloads     map[string]*preloadJob
-	preloadSlots chan struct{}
+	runtime        atomic.Pointer[runtimeState]
+	db             *db.Store
+	logger         *slog.Logger
+	preloadsMu     sync.RWMutex
+	preloads       map[string]*preloadJob
+	preloadSlots   chan struct{}
+	loginMu        sync.Mutex
+	loginBuckets   map[string]loginBucket
+	loginHashSlots chan struct{}
+	negativeMu     sync.Mutex
+	negative       map[string]negativeCacheEntry
+	missMu         sync.Mutex
+	misses         map[string]*cacheMiss
 }
 
-type Principal struct {
-	ID            string `json:"id"`
-	Username      string `json:"username"`
-	Email         string `json:"email,omitempty"`
-	DisplayName   string `json:"display_name,omitempty"`
-	Role          string `json:"role"`
-	Authenticated bool   `json:"authenticated"`
-	TokenID       string `json:"-"`
+type loginBucket struct {
+	window time.Time
+	count  int
 }
+
+type negativeCacheEntry struct {
+	expires time.Time
+	status  int
+	headers http.Header
+}
+
+type cacheMiss struct{ done chan struct{} }
+
+type Principal struct {
+	ID            string   `json:"id"`
+	Username      string   `json:"username"`
+	Email         string   `json:"email,omitempty"`
+	DisplayName   string   `json:"display_name,omitempty"`
+	Role          string   `json:"role"`
+	Authenticated bool     `json:"authenticated"`
+	TokenID       string   `json:"-"`
+	Scopes        []string `json:"-"`
+}
+
+// Version is embedded in upstream User-Agent headers and set by release builds.
+var Version = "0.0.2"
 
 func New(ctx context.Context, cfg config.Config, store *db.Store, objectStore *storage.S3, logger *slog.Logger) (*Server, error) {
 	state, err := makeRuntimeState(ctx, cfg, objectStore, nil)
@@ -65,10 +89,11 @@ func New(ctx context.Context, cfg config.Config, store *db.Store, objectStore *s
 	}
 	s := &Server{
 		db: store, logger: logger, preloads: make(map[string]*preloadJob),
-		preloadSlots: make(chan struct{}, 2),
+		preloadSlots: make(chan struct{}, 2), loginBuckets: make(map[string]loginBucket), loginHashSlots: make(chan struct{}, 4), negative: make(map[string]negativeCacheEntry), misses: make(map[string]*cacheMiss),
 	}
 	s.runtime.Store(state)
 	s.startDownloadResumeCleanup(ctx)
+	s.startOrphanedBlobGC(ctx)
 	return s, nil
 }
 
@@ -186,7 +211,7 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	version, migrationErr := db.MigrationStatus(ctx, s.db.SQL)
-	if s.db.SQL.PingContext(ctx) != nil || migrationErr != nil || version < 3 || s.currentStorage().Ready(ctx) != nil {
+	if s.db.SQL.PingContext(ctx) != nil || migrationErr != nil || version < 4 || s.currentStorage().Ready(ctx) != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
 		return
 	}
@@ -224,6 +249,10 @@ func (s *Server) frontend(w http.ResponseWriter, r *http.Request) {
 	asset := "web/dist/" + name
 	content, err := frontendFS.ReadFile(asset)
 	if err != nil {
+		if path.Ext(name) != "" {
+			http.NotFound(w, r)
+			return
+		}
 		content, err = frontendFS.ReadFile("web/dist/index.html")
 		name = "index.html"
 	}
@@ -242,14 +271,34 @@ func (s *Server) frontend(w http.ResponseWriter, r *http.Request) {
 	if name == "index.html" {
 		contentType = "text/html; charset=utf-8"
 		w.Header().Set("Cache-Control", "no-cache")
-	} else {
+	} else if immutableAsset(name) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
 	if r.Method == http.MethodGet {
 		_, _ = w.Write(content)
 	}
+}
+
+func immutableAsset(name string) bool {
+	base := path.Base(name)
+	dot := strings.LastIndexByte(base, '.')
+	if dot <= 0 {
+		return false
+	}
+	dash := strings.LastIndexByte(base[:dot], '-')
+	if dash < 0 || dot-dash-1 < 8 {
+		return false
+	}
+	for _, r := range base[dash+1 : dot] {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 type responseRecorder struct {
@@ -340,8 +389,16 @@ func writeProblem(w http.ResponseWriter, r *http.Request, status int, title, det
 }
 
 func methodNotAllowed(w http.ResponseWriter) {
-	w.Header().Set("Allow", "GET, HEAD, POST, PATCH, DELETE")
-	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	methodNotAllowedWith(w, "GET, HEAD, POST, PATCH, DELETE")
+}
+
+func methodNotAllowedWith(w http.ResponseWriter, methods string) {
+	w.Header().Set("Allow", methods)
+	w.Header().Set("Content-Type", "application/problem+json; charset=utf-8")
+	w.WriteHeader(http.StatusMethodNotAllowed)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"type": "about:blank", "title": "Method not allowed", "status": http.StatusMethodNotAllowed,
+	})
 }
 
 func (s *Server) audit(ctx context.Context, actorID, action, targetType, targetID string, metadata map[string]any) {
@@ -365,24 +422,27 @@ func (s *Server) authenticate(r *http.Request) (*Principal, error) {
 		return &principal, nil
 	}
 	if header := r.Header.Get("Authorization"); header != "" {
-		if !strings.HasPrefix(header, "Bearer ") {
+		parts := strings.Fields(header)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 			return nil, errUnauthenticated
 		}
-		token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+		token := parts[1]
 		if len(token) < 24 || strings.ContainsAny(token, " \t\r\n") {
 			return nil, errUnauthenticated
 		}
 		digest := HashToken(token, s.currentConfig().SessionSecret)
 		var p Principal
 		var status string
-		err := s.db.SQL.QueryRowContext(r.Context(), `SELECT u.id,u.username,u.email,u.display_name,u.role,u.status,t.id
+		var scopes []string
+		err := s.db.SQL.QueryRowContext(r.Context(), `SELECT u.id,u.username,u.email,u.display_name,u.role,u.status,t.id,t.scopes
 			FROM access_tokens t JOIN users u ON u.id=t.user_id
 			WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>now())`, digest).
-			Scan(&p.ID, &p.Username, &p.Email, &p.DisplayName, &p.Role, &status, &p.TokenID)
+			Scan(&p.ID, &p.Username, &p.Email, &p.DisplayName, &p.Role, &status, &p.TokenID, &scopes)
 		if err != nil || status != "active" {
 			return nil, errUnauthenticated
 		}
 		p.Authenticated = true
+		p.Scopes = scopes
 		_, _ = s.db.SQL.ExecContext(r.Context(), `UPDATE access_tokens SET last_used_at=now() WHERE id=$1`, p.TokenID)
 		return &p, nil
 	}
@@ -409,6 +469,11 @@ func (s *Server) authenticate(r *http.Request) (*Principal, error) {
 	return &p, nil
 }
 
+func hasBearer(r *http.Request) bool {
+	parts := strings.Fields(r.Header.Get("Authorization"))
+	return len(parts) == 2 && strings.EqualFold(parts[0], "Bearer")
+}
+
 func (s *Server) currentPrincipal(r *http.Request) *Principal {
 	p, _ := s.authenticate(r)
 	return p
@@ -425,7 +490,7 @@ func (s *Server) createSession(ctx context.Context, userID string, w http.Respon
 		return "", err
 	}
 	secure := strings.HasPrefix(s.currentConfig().PublicURL, "https://") || strings.HasPrefix(s.currentConfig().OIDCRedirectURL, "https://")
-	http.SetCookie(w, &http.Cookie{Name: "hfproxy_session", Value: token, Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: int(s.currentConfig().SessionIdleTTL.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: "hfproxy_session", Value: token, Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: int(s.currentConfig().SessionAbsoluteTTL.Seconds())})
 	http.SetCookie(w, &http.Cookie{Name: "hfproxy_csrf", Value: csrf, Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: int(s.currentConfig().SessionIdleTTL.Seconds())})
 	return csrf, nil
 }
@@ -463,6 +528,20 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) (*Principa
 	}
 	if p.Role != "admin" {
 		writeProblem(w, r, http.StatusForbidden, "Forbidden", "Administrator role required.")
+		return nil, false
+	}
+	return p, true
+}
+
+func (s *Server) requireOperator(w http.ResponseWriter, r *http.Request) (*Principal, bool) {
+	p, err := s.authenticate(r)
+	if err != nil {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="hfproxy"`)
+		writeProblem(w, r, http.StatusUnauthorized, "Authentication required", "Provide a valid hfproxy token or sign in.")
+		return nil, false
+	}
+	if p.Role != "admin" && p.Role != "operator" {
+		writeProblem(w, r, http.StatusForbidden, "Forbidden", "Operator or administrator role required.")
 		return nil, false
 	}
 	return p, true
