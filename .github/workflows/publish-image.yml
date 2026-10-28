@@ -33,6 +33,12 @@ jobs:
             exit 1
           fi
 
+      - name: Normalize build version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: echo "value=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
@@ -67,7 +73,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            BUILD_VERSION=${{ github.ref_name }}
+            BUILD_VERSION=${{ steps.version.outputs.value }}
             BUILD_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
