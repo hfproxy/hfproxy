@@ -35,6 +35,24 @@ type downloadResume struct {
 	CompletedBytes int64
 }
 
+func (s *Server) lockDownloadResume(ctx context.Context, repositoryID, commit, filePath string) (func(), error) {
+	conn, err := s.db.SQL.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire download resume connection: %w", err)
+	}
+	lockKey := repositoryID + "|" + commit + "|" + filePath
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, lockKey); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("lock download resume: %w", err)
+	}
+	return func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.ExecContext(unlockCtx, `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, lockKey)
+		_ = conn.Close() // Closing the session also releases the lock if unlock failed.
+	}, nil
+}
+
 type upstreamStatusError struct {
 	status int
 	header http.Header

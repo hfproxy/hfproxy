@@ -251,6 +251,24 @@ func (s *Server) resolveFile(w http.ResponseWriter, r *http.Request) {
 	streamed := false
 	expectedLFS := lfsSHA256(firstHeaders.Get("X-Linked-ETag"))
 	if sizeKnown {
+		unlockResume, lockErr := s.lockDownloadResume(r.Context(), repoPK, commit, parsed.FilePath)
+		if lockErr != nil {
+			s.finishDownload(r.Context(), downloadID, 0, "resume_lock")
+			writeProblem(w, r, http.StatusInternalServerError, "Cache metadata error", "Unable to coordinate the cache fill.")
+			return
+		}
+		defer unlockResume()
+		if cached, lookupErr := s.findArtifact(r.Context(), s.db.SQL, repoPK, commit, parsed.FilePath); lookupErr == nil {
+			_, _ = s.db.SQL.ExecContext(r.Context(), `UPDATE artifacts SET last_accessed_at=now() WHERE id=$1`, cached.ID)
+			s.recordDownload(r.Context(), repoPK, commit, parsed.FilePath, "hit", cached.Size, "")
+			s.serveOrAcknowledgePreload(w, r, cached, "HIT")
+			return
+		} else if !isNoRows(lookupErr) {
+			writeProblem(w, r, http.StatusInternalServerError, "Cache metadata error", "Unable to recheck cache metadata.")
+			return
+		}
+	}
+	if sizeKnown {
 		resumeETag := upstream.Header.Get("ETag")
 		if resumeETag == "" {
 			resumeETag = firstHeaders.Get("ETag")
