@@ -3,12 +3,14 @@ import { inject, Injectable, signal } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { AdminApiService } from './admin-api.service';
+import { FeedbackService } from './feedback.service';
 import { AuthProviders, Principal } from './admin.types';
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
   private readonly http = inject(HttpClient);
   private readonly api = inject(AdminApiService);
+  private readonly feedback = inject(FeedbackService);
   private initialization?: Promise<void>;
 
   readonly principal = signal<Principal | null>(null);
@@ -89,7 +91,9 @@ export class AuthService {
       if (error instanceof HttpErrorResponse && error.status === 401) {
         this.principal.set(null);
       } else {
-        this.error.set(AdminApiService.errorMessage(error, 'Sign-out failed. Please retry.'));
+        const message = AdminApiService.errorMessage(error, 'Sign-out failed. Please retry.');
+        this.error.set(message);
+        this.feedback.showError(message);
       }
     } finally {
       this.busy.set(false);

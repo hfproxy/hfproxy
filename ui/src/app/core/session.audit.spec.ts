@@ -5,6 +5,7 @@ import { provideRouter } from '@angular/router';
 import { Component } from '@angular/core';
 import { AdminApiService } from './admin-api.service';
 import { AuthService } from './auth.service';
+import { FeedbackService } from './feedback.service';
 import { sessionInterceptor } from './session.interceptor';
 
 @Component({ selector: 'app-login-stub', standalone: true, template: '' })
@@ -26,6 +27,7 @@ describe('AuditUI session handling', () => {
   let http: HttpTestingController;
   let auth: AuthService;
   let api: AdminApiService;
+  let feedback: FeedbackService;
 
   beforeEach(async () => {
     TestBed.configureTestingModule({
@@ -34,6 +36,7 @@ describe('AuditUI session handling', () => {
     http = TestBed.inject(HttpTestingController);
     auth = TestBed.inject(AuthService);
     api = TestBed.inject(AdminApiService);
+    feedback = TestBed.inject(FeedbackService);
 
     const init = auth.initialize();
     http.expectOne('/api/v1/me').flush(admin);
@@ -74,6 +77,7 @@ describe('AuditUI session handling', () => {
     // Expected: the user is told logout failed (the HttpOnly session cookie is still valid
     // server-side). Actual: every error is swallowed and the UI pretends to be signed out.
     expect(auth.error()).not.toBe('');
+    expect(feedback.error()).toBe('Reload the page and retry the action.');
   });
 });
 

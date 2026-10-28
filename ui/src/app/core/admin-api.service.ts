@@ -31,6 +31,12 @@ export class AdminApiService {
       const body = error.error as { detail?: string; title?: string } | string;
       if (typeof body === 'object' && body) return body.detail || body.title || fallback;
       if (typeof body === 'string' && body.trim()) {
+        try {
+          const parsed = JSON.parse(body) as { detail?: string; title?: string };
+          if (parsed && typeof parsed === 'object') return parsed.detail || parsed.title || fallback;
+        } catch {
+          // Continue with the text/HTML error handling below.
+        }
         if (body.trimStart().startsWith('<')) {
           const responseDocument = new DOMParser().parseFromString(body, 'text/html');
           const message = responseDocument
