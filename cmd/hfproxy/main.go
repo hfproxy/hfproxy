@@ -492,7 +492,7 @@ func cache(args []string) error {
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
-		rows, err := store.SQL.QueryContext(ctx, `SELECT r.repo_type,r.repo_id,a.commit_sha,a.path,b.size_bytes,b.sha256,a.cached_at FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%' ESCAPE '\\') ORDER BY a.cached_at DESC LIMIT 200`, *repo, escapeCLILikePattern(*pathFilter))
+		rows, err := store.SQL.QueryContext(ctx, `SELECT r.repo_type,r.repo_id,a.commit_sha,a.path,b.size_bytes,b.sha256,a.cached_at FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0) ORDER BY a.cached_at DESC LIMIT 200`, *repo, *pathFilter)
 		if err != nil {
 			return err
 		}
@@ -517,7 +517,7 @@ func cache(args []string) error {
 			return err
 		}
 		var count, bytes int64
-		err = store.SQL.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%' ESCAPE '\\')`, *repo, escapeCLILikePattern(*pathFilter)).Scan(&count, &bytes)
+		err = store.SQL.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0)`, *repo, *pathFilter).Scan(&count, &bytes)
 		if err != nil {
 			return err
 		}
@@ -529,7 +529,7 @@ func cache(args []string) error {
 		if !*yes {
 			return fmt.Errorf("purge requires both --execute and --yes")
 		}
-		rows, err := store.SQL.QueryContext(ctx, `SELECT a.id FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%' ESCAPE '\\')`, *repo, escapeCLILikePattern(*pathFilter))
+		rows, err := store.SQL.QueryContext(ctx, `SELECT a.id FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0)`, *repo, *pathFilter)
 		if err != nil {
 			return err
 		}
@@ -616,12 +616,6 @@ func cache(args []string) error {
 	default:
 		return fmt.Errorf("unknown cache command %q", args[0])
 	}
-}
-
-func escapeCLILikePattern(value string) string {
-	value = strings.ReplaceAll(value, `\`, `\\`)
-	value = strings.ReplaceAll(value, `%`, `\%`)
-	return strings.ReplaceAll(value, `_`, `\_`)
 }
 
 func purgeCLI(ctx context.Context, store *db.Store, objects *storage.S3, id string) error {

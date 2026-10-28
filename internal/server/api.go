@@ -818,12 +818,11 @@ func (s *Server) apiCacheEntries(w http.ResponseWriter, r *http.Request) {
 	}
 	repoFilter := r.URL.Query().Get("repo_id")
 	pathFilter := r.URL.Query().Get("path")
-	pathPattern := escapeLikePattern(pathFilter)
 	query := `SELECT a.id,r.repo_type,r.repo_id,a.commit_sha,a.path,b.size_bytes,b.sha256,a.etag,a.cached_at,a.last_accessed_at
 		FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id
 		WHERE r.deleted_at IS NULL AND ($1='admin' OR r.access_policy='public' OR (r.access_policy='allowlist' AND (EXISTS(SELECT 1 FROM repo_grants g WHERE g.repository_id=r.id AND g.subject_type='user' AND g.subject_id=$2) OR EXISTS(SELECT 1 FROM repo_grants g JOIN group_members m ON m.group_id=g.subject_id WHERE g.repository_id=r.id AND g.subject_type='group' AND m.user_id=$2))))
-		AND ($3='' OR r.repo_id=$3) AND ($4='' OR a.path ILIKE '%'||$4||'%' ESCAPE '\\') ORDER BY a.cached_at DESC LIMIT $5`
-	rows, err := s.db.SQL.QueryContext(r.Context(), query, p.Role, p.ID, repoFilter, pathPattern, limit)
+		AND ($3='' OR r.repo_id=$3) AND ($4='' OR strpos(lower(a.path),lower($4))>0) ORDER BY a.cached_at DESC LIMIT $5`
+	rows, err := s.db.SQL.QueryContext(r.Context(), query, p.Role, p.ID, repoFilter, pathFilter, limit)
 	if err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to search cache.")
 		return
@@ -880,10 +879,9 @@ func (s *Server) apiPurge(w http.ResponseWriter, r *http.Request) {
 	confirm := r.URL.Query().Get("confirm") == "true" || r.FormValue("confirm") == "true"
 	repoID := r.URL.Query().Get("repo_id")
 	path := r.URL.Query().Get("path")
-	pathPattern := escapeLikePattern(path)
 	var count int64
 	var size int64
-	err := s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%' ESCAPE '\\')`, repoID, pathPattern).Scan(&count, &size)
+	err := s.db.SQL.QueryRowContext(r.Context(), `SELECT COUNT(*),COALESCE(SUM(b.size_bytes),0) FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0)`, repoID, path).Scan(&count, &size)
 	if err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to estimate purge impact.")
 		return
@@ -892,7 +890,7 @@ func (s *Server) apiPurge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"dry_run": true, "entries": count, "bytes": size, "size": formatBytes(size), "confirmation_required": true})
 		return
 	}
-	rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT a.id FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR a.path ILIKE '%'||$2||'%' ESCAPE '\\')`, repoID, pathPattern)
+	rows, err := s.db.SQL.QueryContext(r.Context(), `SELECT a.id FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE ($1='' OR r.repo_id=$1) AND ($2='' OR strpos(lower(a.path),lower($2))>0)`, repoID, path)
 	if err != nil {
 		writeProblem(w, r, 500, "Database error", "Unable to find cache entries.")
 		return
@@ -1432,12 +1430,6 @@ func decodeListCursor(value string, count int) ([]string, bool) {
 		}
 	}
 	return parts, true
-}
-
-func escapeLikePattern(value string) string {
-	value = strings.ReplaceAll(value, `\`, `\\`)
-	value = strings.ReplaceAll(value, `%`, `\%`)
-	return strings.ReplaceAll(value, `_`, `\_`)
 }
 
 func hasScope(p *Principal, scope string) bool {
