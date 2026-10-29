@@ -47,7 +47,7 @@ services:
   # namespace (see below): for both of them, http://localhost:8180 is Keycloak. The
   # published ports of hfproxy are declared here for that reason.
   keycloak:
-    image: quay.io/keycloak/keycloak:26.1.4
+    image: quay.io/keycloak/keycloak:26.8.1-1
     command: ["start-dev", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
