@@ -70,7 +70,8 @@ const placeholders = (text) =>
 const read = (name) =>
   JSON.parse(readFileSync(new URL(`../src/locale/${name}.json`, import.meta.url), 'utf8'));
 const source = read('messages').translations;
-for (const language of ['fr', 'es', 'de', 'pt', 'zh', 'ja']) {
+const languages = ['fr', 'es', 'de', 'pt', 'zh', 'ja', 'en-x-pirate', 'en-x-emoji'];
+for (const language of languages) {
   const translated = read(language).translations;
   for (const [id, text] of Object.entries(source)) {
     if (!(id in translated))
@@ -79,6 +80,8 @@ for (const language of ['fr', 'es', 'de', 'pt', 'zh', 'ja']) {
     else if (!text.includes('plural') && placeholders(text) !== placeholders(translated[id]))
       problems.push(`${language}: placeholders differ for "${text.slice(0, 60)}" (${id})`);
   }
+  // The English variants may translate messages ahead of the branch that adds them.
+  if (language.startsWith('en-x-')) continue;
   for (const id of Object.keys(translated))
     if (!(id in source)) problems.push(`${language}: unused translation ${id}`);
 }
@@ -88,4 +91,4 @@ if (problems.length) {
   console.error(`\n${problems.length} i18n problem(s)`);
   process.exit(1);
 }
-console.log(`i18n OK: ${Object.keys(source).length} messages in 6 languages`);
+console.log(`i18n OK: ${Object.keys(source).length} messages in ${languages.length} languages`);
