@@ -88,7 +88,7 @@ Only downloads count. The `HEAD` that `huggingface_hub` sends before each load, 
 
 ### First in, first out (`fifo`)
 
-A ring: files leave in the order they came in, whether they were read again or not. The cache turns over at a steady pace and nothing sticks. It suits a buffer where each model serves a few days and never again. A file read every day is still fetched again at every turn.
+A ring (pinned files count towards its file limit and are never removed, so a ring smaller than what is pinned empties everything else at each pass): files leave in the order they came in, whether they were read again or not. The cache turns over at a steady pace and nothing sticks. It suits a buffer where each model serves a few days and never again. A file read every day is still fetched again at every turn.
 
 | Setting | Variable | Default |
 | --- | --- | --- |
@@ -150,7 +150,7 @@ Preloads are always stored: an administrator asked for the file. Files under the
 
 **When it does not.** If the cache is large, or most files are used more than once, `second_request` only adds a fetch from the Hub for each of them, and the second user waits for a download that `always` would have spared. On an air-gapped site, or when the Hub may be unreachable later, a file that was not stored cannot be served: keep `always`, or preload what you need. `frequency` does nothing without `CACHE_MAX_TOTAL_SIZE`.
 
-Requests are counted from the download log, so `RETENTION_DOWNLOADS` must be longer than the window. A client downloading with `Range` requests never fills the cache in any case, and these requests are not counted.
+Requests are counted from the download log, so `RETENTION_DOWNLOADS` must be longer than the window. Migration 18 adds an index on that table for these lookups; it is not built `CONCURRENTLY`, so on a very large `downloads` table writes wait while it builds (run `hfproxy migrate up` in a quiet moment). A client downloading with `Range` requests never fills the cache in any case, and these requests are not counted.
 
 ## Watching it
 

@@ -289,10 +289,20 @@ func (s managedSettings) apply(c Config) Config {
 	return c
 }
 
+// withDefaultedEviction fills in the defaults of the eviction settings. The
+// console reads them in that form and sends them back, so a comparison between
+// the environment's raw value and a saved one would report a change nobody
+// made, and would refuse every save while the setting is locked.
+func withDefaultedEviction(c Config) Config {
+	c.CacheEviction = c.CacheEviction.Normalized()
+	return c
+}
+
 // OverriddenFields lists the settings whose effective value differs from the
 // one read from the environment because saved settings took precedence. Names
 // only: values may be secrets.
 func OverriddenFields(fromEnvironment, effective Config) []string {
+	fromEnvironment, effective = withDefaultedEviction(fromEnvironment), withDefaultedEviction(effective)
 	before, after := reflect.ValueOf(fromEnvironment), reflect.ValueOf(effective)
 	var names []string
 	for i := 0; i < before.NumField(); i++ {
@@ -428,7 +438,7 @@ func (s *managedSettings) pinToEnvironment(base Config) {
 // configurations.
 func ChangedLocked(locked []string, before, after Config) []string {
 	set := LockedSet(locked)
-	a, b := reflect.ValueOf(managedFromConfig(before)), reflect.ValueOf(managedFromConfig(after))
+	a, b := reflect.ValueOf(managedFromConfig(withDefaultedEviction(before))), reflect.ValueOf(managedFromConfig(withDefaultedEviction(after)))
 	t := a.Type()
 	var changed []string
 	for i := 0; i < t.NumField(); i++ {

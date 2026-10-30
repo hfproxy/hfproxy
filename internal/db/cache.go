@@ -54,7 +54,9 @@ func (s *Store) TouchArtifact(ctx context.Context, id string, download bool, hal
 		_, err := s.SQL.ExecContext(ctx, `UPDATE artifacts SET last_accessed_at=now() WHERE id=$1 AND last_accessed_at < now()-interval '1 minute'`, id)
 		return err
 	}
-	// The exponent is bounded because power() fails on an underflow.
+	// A new artifact starts at heat 1 as of its caching, so a download within
+	// the first minute adds nothing. The exponent is bounded because power()
+	// fails on an underflow.
 	_, err := s.SQL.ExecContext(ctx, `UPDATE artifacts SET last_accessed_at=now(),heat_at=now(),
 		heat=heat*power(0.5,LEAST(EXTRACT(EPOCH FROM now()-heat_at)::double precision/$2::double precision,1000))+1
 		WHERE id=$1 AND heat_at < now()-interval '1 minute'`, id, halfLife.Seconds())

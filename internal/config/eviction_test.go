@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestCacheEvictionDefaultsAndValidation(t *testing.T) {
 	got := CacheEviction{}.Normalized()
@@ -55,5 +58,18 @@ func TestSavedSettingsWithoutEvictionKeepTheEnvironment(t *testing.T) {
 	saved := managedFromConfig(Config{CacheEviction: CacheEviction{Strategy: EvictGDSF}})
 	if got := saved.apply(base).CacheEviction.Strategy; got != EvictGDSF {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEvictionRejectsNaNAndInfiniteCosts(t *testing.T) {
+	for name, e := range map[string]CacheEviction{
+		"NaN weight":       {Cost: CacheCost{Weight: math.NaN()}},
+		"NaN latency":      {Cost: CacheCost{LatencySeconds: math.NaN()}},
+		"infinite latency": {Cost: CacheCost{LatencySeconds: math.Inf(1)}},
+		"infinite weight":  {Cost: CacheCost{Weight: math.Inf(1)}},
+	} {
+		if err := e.Validate(); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
 	}
 }

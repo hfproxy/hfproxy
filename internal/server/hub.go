@@ -283,12 +283,12 @@ func (s *Server) accessProblem(w http.ResponseWriter, r *http.Request, err error
 }
 
 // streamUncachedMiss serves requests that cannot wait for a cache fill, such as
-// cold range requests and followers of an in-progress fill. LFS objects with
-// an advertised digest stay on the verified cache-fill path.
-// streamUncachedMiss serves the file from the Hub without storing it. With an
-// expected SHA-256 and a whole-file answer, the bytes are checked as they pass
-// and the connection is cut on a mismatch, as a streamed fill does: the client
-// must not keep a wrong file that looks complete.
+// cold range requests and followers of an in-progress fill, and the files the
+// admission policy does not keep. LFS objects with an advertised digest stay on
+// the verified cache-fill path. With an expected SHA-256 and a whole-file
+// answer, the bytes are checked as they pass and the connection is cut on a
+// mismatch, as a streamed fill does: the client must not keep a wrong file that
+// looks complete.
 func (s *Server) streamUncachedMiss(w http.ResponseWriter, r *http.Request, parsed resolvePath, meta artifact, commit, expectedSHA string) {
 	headers := make(http.Header)
 	for _, name := range []string{"Range", "If-Range", "If-None-Match", "If-Modified-Since"} {

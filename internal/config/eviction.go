@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -154,6 +155,9 @@ func (e CacheEviction) Validate() error {
 	}
 	if e.TargetPercent < 0 || e.TargetPercent > 99 {
 		return fmt.Errorf("the eviction target must be between 1 and 99 percent of the limit (0 means %d)", defaultEvictionTargetPercent)
+	}
+	if math.IsNaN(e.Cost.Weight) || math.IsNaN(e.Cost.LatencySeconds) || math.IsInf(e.Cost.LatencySeconds, 0) {
+		return fmt.Errorf("the cost weight and the estimated fetch latency must be numbers")
 	}
 	if e.Cost.Weight < 0 || e.Cost.Weight > maxCostWeight {
 		return fmt.Errorf("the cost weight must be above 0 and at most %d (0 means %g)", maxCostWeight, defaultCostWeight)
