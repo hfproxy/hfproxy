@@ -20,6 +20,8 @@ type Resumption struct {
 	ContentType    string
 	ChunkSize      int64
 	CompletedBytes int64
+	// ResumedBytes is what an earlier attempt had already stored; it is not saved.
+	ResumedBytes int64
 }
 
 const resumptionColumns = `id,repository_id,commit_sha,path,upstream_etag,total_size,content_type,chunk_size,completed_bytes`

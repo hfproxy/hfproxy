@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -282,9 +283,13 @@ func (s *Server) accessProblem(w http.ResponseWriter, r *http.Request, err error
 }
 
 // streamUncachedMiss serves requests that cannot wait for a cache fill, such as
-// cold range requests and followers of an in-progress fill. LFS objects with
-// an advertised digest stay on the verified cache-fill path.
-func (s *Server) streamUncachedMiss(w http.ResponseWriter, r *http.Request, parsed resolvePath, meta artifact, commit string) {
+// cold range requests and followers of an in-progress fill, and the files the
+// admission policy does not keep. LFS objects with an advertised digest stay on
+// the verified cache-fill path. With an expected SHA-256 and a whole-file
+// answer, the bytes are checked as they pass and the connection is cut on a
+// mismatch, as a streamed fill does: the client must not keep a wrong file that
+// looks complete.
+func (s *Server) streamUncachedMiss(w http.ResponseWriter, r *http.Request, parsed resolvePath, meta artifact, commit, expectedSHA string) {
 	headers := make(http.Header)
 	for _, name := range []string{"Range", "If-Range", "If-None-Match", "If-Modified-Since"} {
 		if value := r.Header.Get(name); value != "" {
@@ -314,7 +319,18 @@ func (s *Server) streamUncachedMiss(w http.ResponseWriter, r *http.Request, pars
 		w.Header().Set("Content-Length", strconv.FormatInt(response.ContentLength, 10))
 	}
 	w.WriteHeader(response.StatusCode)
-	if _, err := io.Copy(w, response.Body); err != nil {
+	if expectedSHA == "" || response.StatusCode != http.StatusOK {
+		if _, err := io.Copy(w, response.Body); err != nil {
+			panic(http.ErrAbortHandler)
+		}
+		return
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(w, hash), response.Body); err != nil {
+		panic(http.ErrAbortHandler)
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != expectedSHA {
+		s.logger.Warn("a file streamed without caching did not match the Hub's SHA-256", "request_id", requestID(r.Context()), "repo_id", parsed.RepoID, "path", safeLogValue(parsed.FilePath, 300))
 		panic(http.ErrAbortHandler)
 	}
 }

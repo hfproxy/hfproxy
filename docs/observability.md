@@ -20,6 +20,8 @@ HTTP route labels are normalized templates. No metric labels contain repository 
 | `hfproxy_http_response_bytes_total` | Counter | route | Bytes accepted by the response writer, including streams and ranges |
 | `hfproxy_http_request_bytes_total` | Counter | route | Request body bytes read by handlers |
 | `hfproxy_cache_requests_total` | Counter | result | One cache decision per HTTP request: hit, miss, bypass, error |
+| `hfproxy_cache_evictions_total` | Counter | reason | Files evicted, by the limit that caused it: idle, revisions, repository, namespace, ring, total |
+| `hfproxy_cache_admissions_total` | Counter | result | Cache misses admitted or refused by the [admission policy](cache-strategies.md#admission) |
 | `hfproxy_cache_lookup_duration_seconds` | Histogram | — | Cache metadata lookup time |
 | `hfproxy_cache_bytes_served_total` | Counter | — | Bytes copied from cache objects to clients |
 | `hfproxy_cache_object_repairs_total` | Counter | — | Cached files whose object was missing from the bucket and were fetched again |

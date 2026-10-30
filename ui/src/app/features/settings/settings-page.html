@@ -633,20 +633,6 @@
                     [(ngModel)]="settings.cache_max_file_size"
                     [disabled]="isLocked('cache_max_file_size')" /></label
                 ><label class="field" i18n
-                  >Total cache size limit
-                  <span class="font-normal text-slate-400">(bytes, 0 = no limit)</span
-                  ><input
-                    class="control"
-                    name="maxTotalSize"
-                    type="number"
-                    min="0"
-                    [(ngModel)]="settings.cache_max_total_size"
-                    [disabled]="isLocked('cache_max_total_size')"
-                  /><span class="mt-1 block text-[11px] font-normal leading-4 text-slate-500"
-                    >When the cache grows past this, the least recently used files are removed.
-                    Pinned files are never removed. For example, 107374182400 is 100 GiB.</span
-                  ></label
-                ><label class="field" i18n
                   >Reference TTL<input
                     class="control"
                     name="refTTL"
@@ -669,6 +655,381 @@
                     placeholder="1h"
                 /></label>
               </div>
+              <h3 class="mt-8 text-sm font-semibold text-slate-900" i18n>Cache limits</h3>
+              <p class="mt-1 max-w-2xl text-xs leading-5 text-slate-500" i18n>
+                Each limit works on its own; 0 turns it off. When a limit is exceeded, eviction
+                brings usage back to the target below so it does not run at every pass. Pinned files
+                and repositories published on the proxy are never removed.
+              </p>
+              <div class="mt-4 grid gap-4 sm:grid-cols-3">
+                <label class="field" i18n
+                  >Total cache size limit
+                  <span class="font-normal text-slate-400">(bytes, 0 = no limit)</span
+                  ><input
+                    class="control"
+                    name="maxTotalSize"
+                    type="number"
+                    min="0"
+                    [(ngModel)]="settings.cache_max_total_size"
+                    [disabled]="isLocked('cache_max_total_size')"
+                  /><span class="mt-1 block text-[11px] font-normal leading-4 text-slate-500"
+                    >For example, 107374182400 is 100 GiB.</span
+                  ></label
+                ><label class="field" i18n
+                  >Target after eviction
+                  <span class="font-normal text-slate-400">(% of the limit)</span
+                  ><input
+                    class="control"
+                    name="evictionTarget"
+                    type="number"
+                    min="1"
+                    max="99"
+                    [(ngModel)]="settings.cache_eviction.target_percent"
+                    [disabled]="isLocked('cache_eviction')" /></label
+                ><label class="field" i18n
+                  >Maximum idle time
+                  <span class="font-normal text-slate-400">(hours, 0 = never)</span
+                  ><input
+                    class="control"
+                    name="maxIdleHours"
+                    type="number"
+                    min="0"
+                    [(ngModel)]="settings.cache_eviction.max_idle_hours"
+                    [disabled]="isLocked('cache_eviction')"
+                  /><span class="mt-1 block text-[11px] font-normal leading-4 text-slate-500"
+                    >A file nobody asked for during this time is removed, whatever the room
+                    left.</span
+                  ></label
+                ><label class="field" i18n
+                  >Per repository <span class="font-normal text-slate-400">(bytes)</span
+                  ><input
+                    class="control"
+                    name="maxRepositorySize"
+                    type="number"
+                    min="0"
+                    [(ngModel)]="settings.cache_eviction.max_repository_size"
+                    [disabled]="isLocked('cache_eviction')"
+                  /><span class="mt-1 block text-[11px] font-normal leading-4 text-slate-500"
+                    >One large repository cannot take the whole cache.</span
+                  ></label
+                ><label class="field" i18n
+                  >Per organization <span class="font-normal text-slate-400">(bytes)</span
+                  ><input
+                    class="control"
+                    name="maxNamespaceSize"
+                    type="number"
+                    min="0"
+                    [(ngModel)]="settings.cache_eviction.max_namespace_size"
+                    [disabled]="isLocked('cache_eviction')"
+                  /><span class="mt-1 block text-[11px] font-normal leading-4 text-slate-500"
+                    >Every repository of a user or organization together.</span
+                  ></label
+                ><label class="field" i18n
+                  >Revisions kept per repository
+                  <span class="font-normal text-slate-400">(0 = all)</span
+                  ><input
+                    class="control"
+                    name="maxRevisions"
+                    type="number"
+                    min="0"
+                    [(ngModel)]="settings.cache_eviction.max_revisions"
+                    [disabled]="isLocked('cache_eviction')"
+                  /><span class="mt-1 block text-[11px] font-normal leading-4 text-slate-500"
+                    >The least recently used commits beyond this number are removed.</span
+                  ></label
+                >
+              </div>
+              <h3 class="mt-8 text-sm font-semibold text-slate-900" i18n>Eviction strategy</h3>
+              <p class="mt-1 max-w-2xl text-xs leading-5 text-slate-500" i18n>
+                The order in which files leave when a size limit is exceeded. The strategy changes
+                nothing while the cache fits in its limits.
+              </p>
+              <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3" role="radiogroup">
+                @for (strategy of strategies; track strategy.id) {
+                  <label
+                    class="strategy"
+                    [class.strategy-selected]="settings.cache_eviction.strategy === strategy.id"
+                    ><input
+                      type="radio"
+                      name="evictionStrategy"
+                      class="sr-only"
+                      [id]="'strategy-' + strategy.id"
+                      [value]="strategy.id"
+                      [(ngModel)]="settings.cache_eviction.strategy"
+                      [disabled]="isLocked('cache_eviction')"
+                    /><span class="flex items-center gap-2 text-[13px] font-semibold text-slate-900"
+                      >{{ strategy.label
+                      }}<code
+                        class="rounded-md bg-slate-100 px-1.5 text-[11px] font-medium text-slate-500"
+                        >{{ strategy.id }}</code
+                      ></span
+                    ><span class="text-xs leading-5 text-slate-500">{{ strategy.summary }}</span>
+                    @if (strategy.badge) {
+                      <span
+                        class="text-[10px] font-semibold uppercase tracking-wider text-emerald-700"
+                        >{{ strategy.badge }}</span
+                      >
+                    }
+                  </label>
+                }
+              </div>
+              <div class="strategy-details">
+                @switch (settings.cache_eviction.strategy) {
+                  @case ('lru') {
+                    <p i18n>
+                      Every download moves the file to the front of one queue; when room is needed,
+                      the file at the back goes. Simple and predictable. A 60 GiB file downloaded
+                      once three days ago outlives a 2 MiB file downloaded fifty times four days
+                      ago, and someone trying a model once pushes useful files out.
+                    </p>
+                  }
+                  @case ('cost_lru') {
+                    <p i18n>
+                      Like LRU, but how long a file has been idle is weighed against how long it
+                      takes to fetch again. A 30 GiB shard that took twenty minutes to arrive may
+                      stay idle longer than a config.json that comes back in a second. The cost is
+                      the measured duration of the file's last fetch from the Hub; files cached
+                      before this version are priced from their size with the estimates below.
+                    </p>
+                    <code i18n
+                      >score = weight × ln(cost) − ln(idle time); the lowest score goes first</code
+                    >
+                  }
+                  @case ('gdsf') {
+                    <p i18n>
+                      GreedyDual-Size-Frequency, the policy of Squid and of CDN caches. A file is
+                      worth frequency × cost ÷ size: a small file that is often downloaded is worth
+                      a lot per byte, a large shard downloaded once is worth little. Best hit rate
+                      counted in files, but large shards are sacrificed first; avoid it when those
+                      are exactly what costs bandwidth. Frequency fades with the half-life.
+                    </p>
+                    <code i18n>score = ln(frequency) + ln(cost) − ln(size)</code>
+                  }
+                  @case ('lfu') {
+                    <p i18n>
+                      Every download adds one to the file's counter, and the counter halves at every
+                      half-life. The lowest counter goes first. The HEAD requests clients send to
+                      check a file do not count. Size and cost are ignored, and a file that was
+                      popular last month stays until the half-life has worn its counter down.
+                    </p>
+                  }
+                  @case ('fifo') {
+                    <p i18n>
+                      A ring: files leave in the order they came in, whether they were read again or
+                      not, so the cache turns over at a steady pace and nothing sticks. Suited to an
+                      evaluation or CI buffer where each model serves a few days and never again; a
+                      file read every day is still fetched again at every turn.
+                    </p>
+                  }
+                }
+                @switch (settings.cache_eviction.strategy) {
+                  @case ('cost_lru') {
+                    <div class="mt-4 grid gap-4 sm:grid-cols-3">
+                      <label class="field" i18n
+                        >Cost weight <span class="font-normal text-slate-400">(0.1 to 2)</span
+                        ><input
+                          class="control"
+                          name="costWeight"
+                          type="number"
+                          min="0.1"
+                          max="2"
+                          step="0.1"
+                          [(ngModel)]="settings.cache_eviction.cost.weight"
+                          [disabled]="isLocked('cache_eviction')"
+                        /><span class="mt-1 block text-[11px] font-normal leading-4 text-slate-500"
+                          >At 1, a file twice as slow to fetch may stay idle twice as long. 0.1 is
+                          close to LRU.</span
+                        ></label
+                      ><ng-container *ngTemplateOutlet="costEstimates" />
+                    </div>
+                  }
+                  @case ('gdsf') {
+                    <div class="mt-4 grid gap-4 sm:grid-cols-3">
+                      <ng-container *ngTemplateOutlet="halfLife" /><ng-container
+                        *ngTemplateOutlet="costEstimates"
+                      />
+                    </div>
+                  }
+                  @case ('lfu') {
+                    <div class="mt-4 grid gap-4 sm:grid-cols-3">
+                      <ng-container *ngTemplateOutlet="halfLife" />
+                    </div>
+                  }
+                  @case ('fifo') {
+                    <div class="mt-4 grid gap-4 sm:grid-cols-2">
+                      <label class="field" i18n
+                        >Ring size
+                        <span class="font-normal text-slate-400">(bytes, 0 = the total limit)</span
+                        ><input
+                          class="control"
+                          name="ringSize"
+                          type="number"
+                          min="0"
+                          [(ngModel)]="settings.cache_eviction.fifo.ring_size"
+                          [disabled]="isLocked('cache_eviction')" /></label
+                      ><label class="field" i18n
+                        >Files in the ring
+                        <span class="font-normal text-slate-400">(0 = no limit)</span
+                        ><input
+                          class="control"
+                          name="ringFiles"
+                          type="number"
+                          min="0"
+                          [(ngModel)]="settings.cache_eviction.fifo.ring_files"
+                          [disabled]="isLocked('cache_eviction')"
+                        /><span class="mt-1 block text-[11px] font-normal leading-4 text-slate-500"
+                          >The first bound reached applies.</span
+                        ></label
+                      >
+                    </div>
+                  }
+                }
+              </div>
+              <ng-template #halfLife>
+                <label class="field" i18n
+                  >Frequency half-life <span class="font-normal text-slate-400">(hours)</span
+                  ><input
+                    class="control"
+                    name="halfLifeHours"
+                    type="number"
+                    min="1"
+                    [(ngModel)]="settings.cache_eviction.frequency.half_life_hours"
+                    [disabled]="isLocked('cache_eviction')"
+                  /><span class="mt-1 block text-[11px] font-normal leading-4 text-slate-500"
+                    >A download counts half as much after this time. 168 is one week.</span
+                  ></label
+                >
+              </ng-template>
+              <ng-template #costEstimates>
+                <label class="field" i18n
+                  >Estimated Hub bandwidth
+                  <span class="font-normal text-slate-400">(bytes per second)</span
+                  ><input
+                    class="control"
+                    name="costBandwidth"
+                    type="number"
+                    min="1"
+                    [(ngModel)]="settings.cache_eviction.cost.bandwidth"
+                    [disabled]="isLocked('cache_eviction')"
+                  /><span class="mt-1 block text-[11px] font-normal leading-4 text-slate-500"
+                    >Prices the files whose fetch was not timed.</span
+                  ></label
+                ><label class="field" i18n
+                  >Estimated latency <span class="font-normal text-slate-400">(seconds)</span
+                  ><input
+                    class="control"
+                    name="costLatency"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    [(ngModel)]="settings.cache_eviction.cost.latency_seconds"
+                    [disabled]="isLocked('cache_eviction')"
+                /></label>
+              </ng-template>
+              <h3 class="mt-8 text-sm font-semibold text-slate-900" i18n>Admission</h3>
+              <p class="mt-1 max-w-2xl text-xs leading-5 text-slate-500" i18n>
+                Whether a file is stored at all the first time a client asks for it. Many models are
+                tried once and never loaded again; storing them evicts files that are still in use.
+                A file that is not stored is still served, streamed from the Hub. Preloads and files
+                under the minimum size are always stored.
+              </p>
+              <div class="mt-4 grid gap-3 sm:grid-cols-3" role="radiogroup">
+                @for (admission of admissions; track admission.id) {
+                  <label
+                    class="strategy"
+                    [class.strategy-selected]="
+                      settings.cache_eviction.admission.policy === admission.id
+                    "
+                    ><input
+                      type="radio"
+                      name="admissionPolicy"
+                      class="sr-only"
+                      [id]="'admission-' + admission.id"
+                      [value]="admission.id"
+                      [(ngModel)]="settings.cache_eviction.admission.policy"
+                      [disabled]="isLocked('cache_eviction')"
+                    /><span class="flex items-center gap-2 text-[13px] font-semibold text-slate-900"
+                      >{{ admission.label
+                      }}<code
+                        class="rounded-md bg-slate-100 px-1.5 text-[11px] font-medium text-slate-500"
+                        >{{ admission.id }}</code
+                      ></span
+                    ><span class="text-xs leading-5 text-slate-500">{{ admission.summary }}</span>
+                    @if (admission.badge) {
+                      <span
+                        class="text-[10px] font-semibold uppercase tracking-wider text-emerald-700"
+                        >{{ admission.badge }}</span
+                      >
+                    }
+                  </label>
+                }
+              </div>
+              <div class="strategy-details">
+                @switch (settings.cache_eviction.admission.policy) {
+                  @case ('always') {
+                    <p i18n>
+                      Right when most files that are fetched once are fetched again, or when the
+                      cache is far larger than what users touch: nothing is ever fetched twice.
+                      Wrong for a shared proxy where people try models: each trial pushes files that
+                      are still in use out of a full cache.
+                    </p>
+                  }
+                  @case ('second_request') {
+                    <p i18n>
+                      Right for a shared proxy where many models are tried once: a model loaded by
+                      one person for one evaluation never takes room. The price is one extra fetch
+                      from the Hub for every file that does get used again, and the second user
+                      waits for it. The window says how long the first request is remembered.
+                    </p>
+                  }
+                  @case ('frequency') {
+                    <p i18n>
+                      Right when the cache is full and its contents are valuable: a newcomer must
+                      earn its place against the file it would push out, counted on recent requests.
+                      While the cache has room, everything is stored. Without a total size limit it
+                      behaves like storing every file.
+                    </p>
+                  }
+                }
+                @if (settings.cache_eviction.admission.policy !== 'always') {
+                  <div class="mt-4 grid gap-4 sm:grid-cols-2">
+                    <label class="field" i18n
+                      >Requests are remembered for
+                      <span class="font-normal text-slate-400">(hours)</span
+                      ><input
+                        class="control"
+                        name="admissionWindowHours"
+                        type="number"
+                        min="1"
+                        [(ngModel)]="settings.cache_eviction.admission.window_hours"
+                        [disabled]="isLocked('cache_eviction')"
+                      /><span class="mt-1 block text-[11px] font-normal leading-4 text-slate-500"
+                        >A request older than this no longer counts. 168 is one week.</span
+                      ></label
+                    ><label class="field" i18n
+                      >Always store files under
+                      <span class="font-normal text-slate-400">(bytes)</span
+                      ><input
+                        class="control"
+                        name="admissionMinSize"
+                        type="number"
+                        min="0"
+                        [(ngModel)]="settings.cache_eviction.admission.min_size"
+                        [disabled]="isLocked('cache_eviction')"
+                      /><span class="mt-1 block text-[11px] font-normal leading-4 text-slate-500"
+                        >Small files (configs, tokenizers) are not worth a second fetch. 67108864 is
+                        64 MiB.</span
+                      ></label
+                    >
+                  </div>
+                }
+              </div>
+              <p class="mt-4 max-w-2xl text-xs leading-5 text-slate-500" i18n>
+                At every maintenance pass (ten minutes, or as soon as a setting changes) the limits
+                apply in this order: idle time, revisions, per repository, per organization, then
+                the total size or the ring, each in the order of the chosen strategy. The strategies
+                are compared in the documentation.
+              </p>
               <h3 class="mt-8 text-sm font-semibold text-slate-900" i18n>Safe formats</h3>
               <p class="mt-1 max-w-2xl text-xs leading-5 text-slate-500" i18n>
                 Pickle-based files (.bin, .pt, .pth, .ckpt, .pkl, .joblib) can run code when a

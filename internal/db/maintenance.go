@@ -34,22 +34,178 @@ func (s *Store) PinnedBytes(ctx context.Context) (int64, error) {
 	return bytes, err
 }
 
-// EvictionCandidate is an unpinned cached file, least recently used first.
-type EvictionCandidate struct{ ArtifactID, BlobID string }
+// EvictionCandidate is an unpinned cached file. Heat is its use count, faded
+// to now with the policy's half-life.
+type EvictionCandidate struct {
+	ArtifactID, BlobID string
+	Heat               float64
+}
 
-// EvictionCandidates returns up to limit unpinned artifacts, oldest access first.
-func (s *Store) EvictionCandidates(ctx context.Context, limit int) ([]EvictionCandidate, error) {
-	rows, err := s.SQL.QueryContext(ctx, `SELECT a.id,a.blob_id FROM artifacts a JOIN repositories r ON r.id=a.repository_id
-		WHERE r.origin='hub' AND NOT EXISTS (`+PinnedArtifactSQL+`)
-		ORDER BY a.last_accessed_at ASC, a.id LIMIT $1`, limit)
+// EvictionPolicy says in which order files leave the cache.
+type EvictionPolicy struct {
+	Strategy      string // a config.Evict* name; anything else is LRU
+	HalfLife      time.Duration
+	CostWeight    float64
+	CostBandwidth int64
+	CostLatency   float64 // seconds
+}
+
+// defaultHeatHalfLife fades the use counts of a policy that names none.
+const defaultHeatHalfLife = 7 * 24 * time.Hour
+
+// EvictionScope narrows the candidates; the zero value is the whole cache.
+type EvictionScope struct {
+	RepositoryID string
+	Namespace    string
+	IdleFor      time.Duration
+}
+
+// order returns the ORDER BY expression that puts the first file to go first,
+// adding its parameters to args. Scores are compared in log space, which keeps
+// them finite for a file idle for years. What a file costs to fetch again is
+// what its last fill took, or an estimate from its size when that is unknown
+// (the fill found the blob already stored, was resumed, or predates the column).
+func (p EvictionPolicy) order(args *[]any) string {
+	bind := func(value float64) string {
+		*args = append(*args, value)
+		return fmt.Sprintf("$%d::double precision", len(*args))
+	}
+	logHeat := func() string {
+		return `ln(GREATEST(a.heat,1e-300))-EXTRACT(EPOCH FROM now()-a.heat_at)::double precision*ln(2)/` + bind(p.HalfLife.Seconds())
+	}
+	logCost := func() string {
+		return `ln(GREATEST(COALESCE(a.fill_seconds,b.size_bytes/` + bind(float64(p.CostBandwidth)) + `+` + bind(p.CostLatency) + `),0.001))`
+	}
+	switch p.Strategy {
+	case "fifo":
+		return `a.cached_at`
+	case "lfu":
+		return logHeat()
+	case "gdsf":
+		return logHeat() + `+` + logCost() + `-ln(GREATEST(b.size_bytes,1)::double precision)`
+	case "cost_lru":
+		return bind(p.CostWeight) + `*` + logCost() + `-ln(GREATEST(EXTRACT(EPOCH FROM now()-a.last_accessed_at)::double precision,0)+1)`
+	default:
+		return `a.last_accessed_at`
+	}
+}
+
+// EvictionCandidates returns up to limit unpinned artifacts of the scope, in the
+// order the policy evicts them.
+func (s *Store) EvictionCandidates(ctx context.Context, policy EvictionPolicy, scope EvictionScope, limit int) ([]EvictionCandidate, error) {
+	if policy.HalfLife <= 0 {
+		policy.HalfLife = defaultHeatHalfLife
+	}
+	args := []any{limit}
+	filter := ""
+	if scope.RepositoryID != "" {
+		args = append(args, scope.RepositoryID)
+		filter += fmt.Sprintf(` AND r.id=$%d`, len(args))
+	}
+	if scope.Namespace != "" {
+		args = append(args, scope.Namespace)
+		filter += fmt.Sprintf(` AND `+namespaceOfRepository+`=$%d`, len(args))
+	}
+	if scope.IdleFor > 0 {
+		args = append(args, scope.IdleFor.Seconds())
+		filter += fmt.Sprintf(` AND a.last_accessed_at < now()-make_interval(secs => $%d::double precision)`, len(args))
+	}
+	order := policy.order(&args)
+	args = append(args, policy.HalfLife.Seconds())
+	heat := fmt.Sprintf(`a.heat*power(0.5,LEAST(EXTRACT(EPOCH FROM now()-a.heat_at)::double precision/$%d::double precision,1000))`, len(args))
+	rows, err := s.SQL.QueryContext(ctx, `SELECT a.id,a.blob_id,`+heat+` FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id
+		WHERE r.origin='hub' AND NOT EXISTS (`+PinnedArtifactSQL+`)`+filter+`
+		ORDER BY `+order+`, a.id LIMIT $1`, args...)
+	if err != nil {
+		return nil, err
+	}
+	return scanEvictionCandidates(rows)
+}
+
+// StaleRevisionCandidates returns up to limit unpinned artifacts of the commits
+// beyond the keep most recently used of each repository.
+func (s *Store) StaleRevisionCandidates(ctx context.Context, keep int64, limit int) ([]EvictionCandidate, error) {
+	rows, err := s.SQL.QueryContext(ctx, `WITH ranked AS (
+			SELECT a.repository_id,a.commit_sha,row_number() OVER (PARTITION BY a.repository_id ORDER BY MAX(a.last_accessed_at) DESC,a.commit_sha) AS position
+			FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE r.origin='hub' GROUP BY a.repository_id,a.commit_sha
+		)
+		SELECT a.id,a.blob_id,a.heat FROM artifacts a JOIN ranked k ON k.repository_id=a.repository_id AND k.commit_sha=a.commit_sha
+		WHERE k.position>$2 AND NOT EXISTS (`+PinnedArtifactSQL+`)
+		ORDER BY a.last_accessed_at, a.id LIMIT $1`, limit, keep)
+	if err != nil {
+		return nil, err
+	}
+	return scanEvictionCandidates(rows)
+}
+
+// namespaceOfRepository is the user or organisation of a repository; a
+// repository without one (gpt2) is its own namespace.
+const namespaceOfRepository = `split_part(r.repo_id,'/',1)`
+
+// RepositoriesOver lists the repositories whose cached files exceed limit bytes.
+func (s *Store) RepositoriesOver(ctx context.Context, limit int64) ([]string, error) {
+	return s.scopesOver(ctx, `r.id`, limit)
+}
+
+// NamespacesOver lists the namespaces whose cached files exceed limit bytes.
+func (s *Store) NamespacesOver(ctx context.Context, limit int64) ([]string, error) {
+	return s.scopesOver(ctx, namespaceOfRepository, limit)
+}
+
+func (s *Store) scopesOver(ctx context.Context, scope string, limit int64) ([]string, error) {
+	rows, err := s.SQL.QueryContext(ctx, `SELECT scope FROM (
+			SELECT DISTINCT `+scope+` AS scope,b.id,b.size_bytes FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE r.origin='hub'
+		) files GROUP BY scope HAVING SUM(size_bytes)>$1 ORDER BY scope`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	var scopes []string
+	for rows.Next() {
+		var scope string
+		if err := rows.Scan(&scope); err != nil {
+			return nil, err
+		}
+		scopes = append(scopes, scope)
+	}
+	return scopes, rows.Err()
+}
+
+// ScopeBytes is the size of the distinct blobs cached for a repository or a
+// namespace. A blob shared by two commits of a repository counts once.
+func (s *Store) ScopeBytes(ctx context.Context, scope EvictionScope) (int64, error) {
+	filter, value := `r.id=$1`, scope.RepositoryID
+	if scope.Namespace != "" {
+		filter, value = namespaceOfRepository+`=$1`, scope.Namespace
+	}
+	var total int64
+	err := s.SQL.QueryRowContext(ctx, `SELECT COALESCE(SUM(size_bytes),0) FROM (
+		SELECT DISTINCT b.id,b.size_bytes FROM artifacts a JOIN repositories r ON r.id=a.repository_id JOIN blobs b ON b.id=a.blob_id WHERE r.origin='hub' AND `+filter+`) files`, value).Scan(&total)
+	return total, err
+}
+
+// RecentRequests counts the requests for a file within window, whatever their
+// outcome: the download log is the ghost list of the admission policies.
+func (s *Store) RecentRequests(ctx context.Context, repoID, commit, path string, window time.Duration) (int64, error) {
+	var count int64
+	err := s.SQL.QueryRowContext(ctx, `SELECT COUNT(*) FROM downloads WHERE repository_id=$1 AND commit_sha=$2 AND path=$3 AND started_at > now()-make_interval(secs => $4::double precision)`,
+		repoID, commit, path, window.Seconds()).Scan(&count)
+	return count, err
+}
+
+// CachedFiles counts the files cached from the Hub.
+func (s *Store) CachedFiles(ctx context.Context) (int64, error) {
+	var total int64
+	err := s.SQL.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts a JOIN repositories r ON r.id=a.repository_id WHERE r.origin='hub'`).Scan(&total)
+	return total, err
+}
+
+func scanEvictionCandidates(rows *sql.Rows) ([]EvictionCandidate, error) {
+	defer rows.Close()
 	var batch []EvictionCandidate
 	for rows.Next() {
 		var c EvictionCandidate
-		if err := rows.Scan(&c.ArtifactID, &c.BlobID); err != nil {
+		if err := rows.Scan(&c.ArtifactID, &c.BlobID, &c.Heat); err != nil {
 			return nil, err
 		}
 		batch = append(batch, c)

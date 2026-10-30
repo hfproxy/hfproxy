@@ -52,6 +52,7 @@ Environment variables use the `HFPROXY_` prefix. Common settings for local Compo
 | OIDC | OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_REDIRECT_URL, OIDC_AUTO_PROVISION |
 | LDAP | LDAP_URL, LDAP_STARTTLS, LDAP_BIND_DN, LDAP_BIND_PASSWORD, LDAP_BASE_DN, LDAP_USER_FILTER, LDAP_AUTO_PROVISION |
 | Cache limits | CACHE_MAX_FILE_SIZE, CACHE_REF_TTL, CACHE_NEGATIVE_TTL, CACHE_GC_GRACE |
+| Cache strategies | CACHE_EVICTION_STRATEGY, CACHE_ADMISSION and the limits of [Cache strategies](cache-strategies.md) (also in the console) |
 | Capacity and retention | CACHE_MAX_TOTAL_SIZE, CACHE_FILL_CONCURRENCY, STAGING_DIR, STAGING_MIN_FREE_BYTES, RETENTION_DOWNLOADS, RETENTION_AUDIT |
 | Metrics | METRICS_ENABLED, METRICS_PATH, METRICS_ADDR |
 | Safe formats | SAFE_FORMATS_ONLY (also in the console; see [Safe formats](safe-formats.md)) |
@@ -64,7 +65,7 @@ The upstream HF token is optional for public repositories and required for priva
 
 Capacity and retention settings come from the environment, except the cache size limit, which can also be changed in the console:
 
-- `CACHE_MAX_TOTAL_SIZE` (bytes, `0` = unlimited): when live blobs exceed it, the least recently used artifacts are dropped until usage is under 90% of the quota. Their objects are deleted by the garbage collector after `CACHE_GC_GRACE`. It can also be set under **Settings → Cache rules**; a value saved there replaces the environment's and is enforced within seconds, without a restart. Leaving it out of an API request keeps the current limit, and `0` removes it.
+- `CACHE_MAX_TOTAL_SIZE` (bytes, `0` = unlimited): when live blobs exceed it, artifacts are dropped until usage is under 90% of the quota, least recently used first unless another [strategy](cache-strategies.md) is chosen. Their objects are deleted by the garbage collector after `CACHE_GC_GRACE`. It can also be set under **Settings → Cache rules**; a value saved there replaces the environment's and is enforced within seconds, without a restart. Leaving it out of an API request keeps the current limit, and `0` removes it.
 - `CACHE_FILL_CONCURRENCY` (default `4`): how many files may be fetched from the Hub at once. Further requests wait up to 15 seconds, then receive `503` with `Retry-After`.
 - `STAGING_DIR` (default: the system temporary directory): where files are staged before upload. Size it for `CACHE_FILL_CONCURRENCY` times your largest file; a fill that does not fit in the free space is refused with `507`. `hfproxy_staging_free_bytes` and `hfproxy_staging_reserved_bytes` show the room left.
 - `STAGING_MIN_FREE_BYTES` (default `0`, off): when set, `/readyz` answers `503` with `"reason":"staging_space"` while the staging directory has less free space than this. Use it when several instances share traffic, so a full disk takes that instance out of rotation; with a single instance it would also stop cache hits, so leave it off and alert on the gauge instead.

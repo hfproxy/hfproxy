@@ -202,3 +202,26 @@ func TestSettingsSavedFromOutdatedSettingsAreRefused(t *testing.T) {
 		t.Fatalf("a save from the refreshed replica = %d %v", code, out)
 	}
 }
+
+// The console reads the eviction settings with their defaults filled in and
+// sends them back. While they are locked to the environment, that round trip
+// must not count as a change, or no other setting could be saved.
+func TestLockedEvictionSettingsDoNotBlockOtherSaves(t *testing.T) {
+	store := auditAPIFreshStore(t)
+	cfg := auditAPIConfig()
+	cfg.LockedSettings = []string{"cache_eviction"}
+	s := auditAPINewServer(t, store, cfg)
+	admin := settingsAdmin(t, store)
+
+	view := settingsPayload(t, s, admin)
+	view["cache_ref_ttl"] = "2m"
+	if status, out := putSettings(t, s, admin, view); status != http.StatusOK {
+		t.Fatalf("PUT of an unrelated change with the eviction settings locked = %d %v", status, out)
+	}
+
+	changing := settingsPayload(t, s, admin)
+	changing["cache_eviction"].(map[string]any)["strategy"] = "gdsf"
+	if status, _ := putSettings(t, s, admin, changing); status != http.StatusConflict {
+		t.Fatalf("PUT changing the locked strategy = %d, want 409", status)
+	}
+}

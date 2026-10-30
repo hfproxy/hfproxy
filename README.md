@@ -38,7 +38,7 @@
 
 | | |
 | --- | --- |
-| **Caching** | SHA-256 deduplication, branch/tag/SHA revisions, ETag/304, single Range requests, resumable 64 MiB-block fills, LRU eviction under a size quota, pinning of revisions that must never be evicted, preload from the console, integrity verification (`cache verify`). |
+| **Caching** | SHA-256 deduplication, branch/tag/SHA revisions, ETag/304, single Range requests, resumable 64 MiB-block fills, [five eviction strategies, limits per repository and organization, and an admission filter](docs/cache-strategies.md), pinning of revisions that must never be evicted, preload from the console, integrity verification (`cache verify`). |
 | **Access control** | Per-repository policies, local users and groups, roles (`admin`, `operator`, `reader`), hashed personal tokens with `read`, `publish`, `write` and `admin` scopes, OIDC/SSO, LDAP/LDAPS with group sync, anonymous reads for public repositories only. |
 | **Publishing** | Models and datasets on the proxy, with branches, tags, history, Git LFS for large files, model cards, per-user quota and file size limit. See [Publishing](docs/publishing.md). |
 | **Safe formats** | Optionally refuse pickle-based weights (`.bin`, `.pt`, `.ckpt`...) on read, preload and publish, check that `.safetensors` files really are, and exempt a repository when needed. See [Safe formats](docs/safe-formats.md). |
@@ -136,6 +136,7 @@ hfproxy serve | migrate | admin | cache | config | version
 | Running it | [Production checklist](docs/production.md), [Operations](docs/operations.md), [Sizing](docs/sizing.md), [Runbooks](docs/runbooks.md) |
 | Configuring it | [Configuration reference](docs/configuration.md), [Publishing](docs/publishing.md) |
 | Watching it | [Observability](docs/observability.md), [SLOs](docs/slo.md), Grafana and Prometheus files in `docs/` |
+| Cache behavior | [Cache strategies](docs/cache-strategies.md) |
 | Trusting it | [Safe formats](docs/safe-formats.md), [Threat model](docs/threat-model.md), [Security scanning](docs/security-scanning.md), [SECURITY.md](SECURITY.md) |
 | Hub compatibility | [Compatibility audit](docs/huggingface-compatibility.md), [Validation](docs/validation.md) |
 | Trying it | [Testing stack with Keycloak, Prometheus and Grafana](docs/testing-stack.md) |

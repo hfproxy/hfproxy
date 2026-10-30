@@ -208,3 +208,31 @@ func TestSafeFormatsSkipPreloadedHubFiles(t *testing.T) {
 		t.Fatalf("exempted request = %d %q", resp.StatusCode, data)
 	}
 }
+
+// The label values of a counter are given as name=value.
+func TestRefusedFormatsAreCountedPerPlace(t *testing.T) {
+	s := &Server{metrics: newMetrics()}
+	s.countRefusedFormat("read")
+	s.countRefusedFormat("publish")
+	s.countRefusedFormat("publish")
+	families, err := s.metrics.registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]float64{}
+	for _, family := range families {
+		if family.GetName() != "hfproxy_unsafe_format_refused_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "where" {
+					got[label.GetValue()] = metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	if got["read"] != 1 || got["publish"] != 2 || len(got) != 2 {
+		t.Fatalf("refusals by place = %v, want read 1 and publish 2", got)
+	}
+}

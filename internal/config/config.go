@@ -110,6 +110,8 @@ type Config struct {
 	StagingMinFreeBytes  int64
 	CacheFillConcurrency int
 	CacheMaxTotalSize    int64
+	// CacheEviction chooses which files leave the cache, and when.
+	CacheEviction CacheEviction
 	// Download limits; 0 turns each one off.
 	// DownloadMaxConcurrent is how many transfers one user (or one anonymous
 	// client address) may run at once on this instance.
@@ -245,6 +247,10 @@ func Load() (Config, error) {
 	c.StagingMinFreeBytes = int64(number("STAGING_MIN_FREE_BYTES", 0))
 	c.CacheFillConcurrency = number("CACHE_FILL_CONCURRENCY", 4)
 	c.CacheMaxTotalSize = int64(number("CACHE_MAX_TOTAL_SIZE", 0))
+	c.CacheEviction, err = cacheEvictionFromEnvironment()
+	if err != nil {
+		return Config{}, err
+	}
 	c.DownloadMaxConcurrent = int64(number("DOWNLOAD_MAX_CONCURRENT_PER_USER", 0))
 	c.DownloadRateLimit = int64(number("DOWNLOAD_RATE_LIMIT", 0))
 	c.DownloadDailyQuota = int64(number("DOWNLOAD_DAILY_QUOTA", 0))
@@ -356,6 +362,9 @@ func (c Config) Validate() error {
 	}
 	if c.CacheFillConcurrency < 0 || c.CacheMaxTotalSize < 0 || c.RetentionDownloads < 0 || c.RetentionAudit < 0 {
 		return fmt.Errorf("HFPROXY_CACHE_FILL_CONCURRENCY, HFPROXY_CACHE_MAX_TOTAL_SIZE and the retention periods must not be negative")
+	}
+	if err := c.CacheEviction.Validate(); err != nil {
+		return err
 	}
 	if c.AuthCacheTTL < 0 || c.AuthCacheTTL > time.Minute || c.DownloadLogQueue < 0 {
 		return fmt.Errorf("HFPROXY_AUTH_CACHE_TTL must be between 0 and 1m and HFPROXY_DOWNLOAD_LOG_QUEUE must not be negative")

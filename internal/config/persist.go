@@ -18,56 +18,57 @@ import (
 )
 
 type managedSettings struct {
-	PublicURL              string        `json:"public_url"`
-	HFBaseURL              string        `json:"hf_base_url"`
-	HFProxyURL             *string       `json:"hf_proxy_url,omitempty"`
-	HFToken                string        `json:"hf_token"`
-	HFAllowedHosts         []string      `json:"hf_allowed_hosts"`
-	HFTimeout              time.Duration `json:"hf_timeout"`
-	S3Endpoint             string        `json:"s3_endpoint"`
-	S3Region               string        `json:"s3_region"`
-	S3Bucket               string        `json:"s3_bucket"`
-	S3Prefix               string        `json:"s3_prefix"`
-	S3ForcePathStyle       bool          `json:"s3_force_path_style"`
-	S3AccessKey            string        `json:"s3_access_key"`
-	S3SecretKey            string        `json:"s3_secret_key"`
-	S3ServerSideEncryption *bool         `json:"s3_server_side_encryption"`
-	AuthMode               string        `json:"auth_mode"`
-	AnonymousPublicRead    bool          `json:"anonymous_public_read"`
-	SessionIdleTTL         time.Duration `json:"session_idle_ttl"`
-	SessionAbsoluteTTL     time.Duration `json:"session_absolute_ttl"`
-	CacheMaxFileSize       int64         `json:"cache_max_file_size"`
-	CacheMaxTotalSize      *int64        `json:"cache_max_total_size,omitempty"`
-	DownloadMaxConcurrent  *int64        `json:"download_max_concurrent,omitempty"`
-	DownloadRateLimit      *int64        `json:"download_rate_limit,omitempty"`
-	DownloadDailyQuota     *int64        `json:"download_daily_quota,omitempty"`
-	CustomRepos            *bool         `json:"custom_repositories,omitempty"`
-	SafeFormatsOnly        *bool         `json:"safe_formats_only,omitempty"`
-	UploadMaxFileSize      *int64        `json:"upload_max_file_size,omitempty"`
-	UploadUserQuota        *int64        `json:"upload_user_quota,omitempty"`
-	CacheRefTTL            time.Duration `json:"cache_ref_ttl"`
-	CacheNegativeTTL       time.Duration `json:"cache_negative_ttl"`
-	CacheGCGrace           time.Duration `json:"cache_gc_grace"`
-	OIDCIssuer             string        `json:"oidc_issuer"`
-	OIDCClientID           string        `json:"oidc_client_id"`
-	OIDCClientSecret       string        `json:"oidc_client_secret"`
-	OIDCRedirectURL        string        `json:"oidc_redirect_url"`
-	OIDCAutoProvision      bool          `json:"oidc_auto_provision"`
-	LDAPURL                string        `json:"ldap_url"`
-	LDAPStartTLS           bool          `json:"ldap_starttls"`
-	LDAPBindDN             string        `json:"ldap_bind_dn"`
-	LDAPBindPassword       string        `json:"ldap_bind_password"`
-	LDAPBaseDN             string        `json:"ldap_base_dn"`
-	LDAPUserFilter         string        `json:"ldap_user_filter"`
-	LDAPAutoProvision      bool          `json:"ldap_auto_provision"`
-	MetricsEnabled         bool          `json:"metrics_enabled"`
-	MetricsPath            string        `json:"metrics_path"`
-	TracingEnabled         bool          `json:"tracing_enabled"`
-	TracingServiceName     string        `json:"tracing_service_name"`
-	TracingSamplingRatio   float64       `json:"tracing_sampling_ratio"`
-	OTLPEndpoint           string        `json:"otlp_endpoint"`
-	CacheInventoryRefresh  time.Duration `json:"cache_inventory_refresh"`
-	LogLevel               string        `json:"log_level"`
+	PublicURL              string         `json:"public_url"`
+	HFBaseURL              string         `json:"hf_base_url"`
+	HFProxyURL             *string        `json:"hf_proxy_url,omitempty"`
+	HFToken                string         `json:"hf_token"`
+	HFAllowedHosts         []string       `json:"hf_allowed_hosts"`
+	HFTimeout              time.Duration  `json:"hf_timeout"`
+	S3Endpoint             string         `json:"s3_endpoint"`
+	S3Region               string         `json:"s3_region"`
+	S3Bucket               string         `json:"s3_bucket"`
+	S3Prefix               string         `json:"s3_prefix"`
+	S3ForcePathStyle       bool           `json:"s3_force_path_style"`
+	S3AccessKey            string         `json:"s3_access_key"`
+	S3SecretKey            string         `json:"s3_secret_key"`
+	S3ServerSideEncryption *bool          `json:"s3_server_side_encryption"`
+	AuthMode               string         `json:"auth_mode"`
+	AnonymousPublicRead    bool           `json:"anonymous_public_read"`
+	SessionIdleTTL         time.Duration  `json:"session_idle_ttl"`
+	SessionAbsoluteTTL     time.Duration  `json:"session_absolute_ttl"`
+	CacheMaxFileSize       int64          `json:"cache_max_file_size"`
+	CacheMaxTotalSize      *int64         `json:"cache_max_total_size,omitempty"`
+	CacheEviction          *CacheEviction `json:"cache_eviction,omitempty"`
+	DownloadMaxConcurrent  *int64         `json:"download_max_concurrent,omitempty"`
+	DownloadRateLimit      *int64         `json:"download_rate_limit,omitempty"`
+	DownloadDailyQuota     *int64         `json:"download_daily_quota,omitempty"`
+	CustomRepos            *bool          `json:"custom_repositories,omitempty"`
+	SafeFormatsOnly        *bool          `json:"safe_formats_only,omitempty"`
+	UploadMaxFileSize      *int64         `json:"upload_max_file_size,omitempty"`
+	UploadUserQuota        *int64         `json:"upload_user_quota,omitempty"`
+	CacheRefTTL            time.Duration  `json:"cache_ref_ttl"`
+	CacheNegativeTTL       time.Duration  `json:"cache_negative_ttl"`
+	CacheGCGrace           time.Duration  `json:"cache_gc_grace"`
+	OIDCIssuer             string         `json:"oidc_issuer"`
+	OIDCClientID           string         `json:"oidc_client_id"`
+	OIDCClientSecret       string         `json:"oidc_client_secret"`
+	OIDCRedirectURL        string         `json:"oidc_redirect_url"`
+	OIDCAutoProvision      bool           `json:"oidc_auto_provision"`
+	LDAPURL                string         `json:"ldap_url"`
+	LDAPStartTLS           bool           `json:"ldap_starttls"`
+	LDAPBindDN             string         `json:"ldap_bind_dn"`
+	LDAPBindPassword       string         `json:"ldap_bind_password"`
+	LDAPBaseDN             string         `json:"ldap_base_dn"`
+	LDAPUserFilter         string         `json:"ldap_user_filter"`
+	LDAPAutoProvision      bool           `json:"ldap_auto_provision"`
+	MetricsEnabled         bool           `json:"metrics_enabled"`
+	MetricsPath            string         `json:"metrics_path"`
+	TracingEnabled         bool           `json:"tracing_enabled"`
+	TracingServiceName     string         `json:"tracing_service_name"`
+	TracingSamplingRatio   float64        `json:"tracing_sampling_ratio"`
+	OTLPEndpoint           string         `json:"otlp_endpoint"`
+	CacheInventoryRefresh  time.Duration  `json:"cache_inventory_refresh"`
+	LogLevel               string         `json:"log_level"`
 }
 
 // ErrSettingsConflict means the saved settings changed since the caller read
@@ -219,7 +220,7 @@ func managedFromConfig(c Config) managedSettings {
 		PublicURL: c.PublicURL, HFBaseURL: c.HFBaseURL, HFProxyURL: stringPointer(c.HFProxyURL), HFToken: c.HFToken, HFAllowedHosts: c.HFAllowedHosts, HFTimeout: c.HFTimeout,
 		S3Endpoint: c.S3Endpoint, S3Region: c.S3Region, S3Bucket: c.S3Bucket, S3Prefix: c.S3Prefix, S3ForcePathStyle: c.S3ForcePathStyle,
 		S3AccessKey: c.S3AccessKey, S3SecretKey: c.S3SecretKey, S3ServerSideEncryption: boolPointer(c.S3ServerSideEncryption), AuthMode: c.AuthMode, AnonymousPublicRead: c.AnonymousPublicRead,
-		SessionIdleTTL: c.SessionIdleTTL, SessionAbsoluteTTL: c.SessionAbsoluteTTL, CacheMaxFileSize: c.CacheMaxFileSize, CacheMaxTotalSize: int64Pointer(c.CacheMaxTotalSize), DownloadMaxConcurrent: int64Pointer(c.DownloadMaxConcurrent), DownloadRateLimit: int64Pointer(c.DownloadRateLimit), DownloadDailyQuota: int64Pointer(c.DownloadDailyQuota), CustomRepos: boolPointer(c.CustomRepos), SafeFormatsOnly: boolPointer(c.SafeFormatsOnly), UploadMaxFileSize: int64Pointer(c.UploadMaxFileSize), UploadUserQuota: int64Pointer(c.UploadUserQuota),
+		SessionIdleTTL: c.SessionIdleTTL, SessionAbsoluteTTL: c.SessionAbsoluteTTL, CacheMaxFileSize: c.CacheMaxFileSize, CacheMaxTotalSize: int64Pointer(c.CacheMaxTotalSize), CacheEviction: &c.CacheEviction, DownloadMaxConcurrent: int64Pointer(c.DownloadMaxConcurrent), DownloadRateLimit: int64Pointer(c.DownloadRateLimit), DownloadDailyQuota: int64Pointer(c.DownloadDailyQuota), CustomRepos: boolPointer(c.CustomRepos), SafeFormatsOnly: boolPointer(c.SafeFormatsOnly), UploadMaxFileSize: int64Pointer(c.UploadMaxFileSize), UploadUserQuota: int64Pointer(c.UploadUserQuota),
 		CacheRefTTL: c.CacheRefTTL, CacheNegativeTTL: c.CacheNegativeTTL, CacheGCGrace: c.CacheGCGrace,
 		OIDCIssuer: c.OIDCIssuer, OIDCClientID: c.OIDCClientID, OIDCClientSecret: c.OIDCClientSecret, OIDCRedirectURL: c.OIDCRedirectURL,
 		OIDCAutoProvision: c.OIDCAutoProvision, LDAPURL: c.LDAPURL, LDAPStartTLS: c.LDAPStartTLS, LDAPBindDN: c.LDAPBindDN,
@@ -243,6 +244,9 @@ func (s managedSettings) apply(c Config) Config {
 	// the environment is kept rather than reset to "unlimited".
 	if s.CacheMaxTotalSize != nil {
 		c.CacheMaxTotalSize = *s.CacheMaxTotalSize
+	}
+	if s.CacheEviction != nil {
+		c.CacheEviction = *s.CacheEviction
 	}
 	// Settings saved before the download limits existed leave them unset, so
 	// the values from the environment are kept.
@@ -285,10 +289,20 @@ func (s managedSettings) apply(c Config) Config {
 	return c
 }
 
+// withDefaultedEviction fills in the defaults of the eviction settings. The
+// console reads them in that form and sends them back, so a comparison between
+// the environment's raw value and a saved one would report a change nobody
+// made, and would refuse every save while the setting is locked.
+func withDefaultedEviction(c Config) Config {
+	c.CacheEviction = c.CacheEviction.Normalized()
+	return c
+}
+
 // OverriddenFields lists the settings whose effective value differs from the
 // one read from the environment because saved settings took precedence. Names
 // only: values may be secrets.
 func OverriddenFields(fromEnvironment, effective Config) []string {
+	fromEnvironment, effective = withDefaultedEviction(fromEnvironment), withDefaultedEviction(effective)
 	before, after := reflect.ValueOf(fromEnvironment), reflect.ValueOf(effective)
 	var names []string
 	for i := 0; i < before.NumField(); i++ {
@@ -424,7 +438,7 @@ func (s *managedSettings) pinToEnvironment(base Config) {
 // configurations.
 func ChangedLocked(locked []string, before, after Config) []string {
 	set := LockedSet(locked)
-	a, b := reflect.ValueOf(managedFromConfig(before)), reflect.ValueOf(managedFromConfig(after))
+	a, b := reflect.ValueOf(managedFromConfig(withDefaultedEviction(before))), reflect.ValueOf(managedFromConfig(withDefaultedEviction(after)))
 	t := a.Type()
 	var changed []string
 	for i := 0; i < t.NumField(); i++ {
