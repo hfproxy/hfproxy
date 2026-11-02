@@ -1,9 +1,15 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../core/auth.service';
 import { AdminApiService } from '../../core/admin-api.service';
 import { FeedbackService } from '../../core/feedback.service';
-import { ManagedSettings, SettingsDraft } from '../../core/admin.types';
+import {
+  CacheAdmissionPolicy,
+  CacheStrategy,
+  ManagedSettings,
+  SettingsDraft,
+} from '../../core/admin.types';
 import { IconComponent } from '../../shared/icon/icon';
 import { PageHeadingComponent } from '../../shared/page-heading/page-heading';
 
@@ -13,7 +19,7 @@ type SettingsSection =
 @Component({
   selector: 'app-settings-page',
   standalone: true,
-  imports: [FormsModule, IconComponent, PageHeadingComponent],
+  imports: [FormsModule, NgTemplateOutlet, IconComponent, PageHeadingComponent],
   templateUrl: './settings-page.html',
   styleUrl: './settings-page.css',
 })
@@ -40,6 +46,67 @@ export class SettingsPageComponent implements OnInit {
     { id: 'cache', label: $localize`Cache rules`, icon: 'layers' },
     { id: 'publishing', label: $localize`Publishing`, icon: 'box' },
     { id: 'observability', label: $localize`Observability`, icon: 'layers' },
+  ];
+
+  /** The eviction strategies, as the cards present them. */
+  protected readonly strategies: {
+    id: CacheStrategy;
+    label: string;
+    summary: string;
+    badge?: string;
+  }[] = [
+    {
+      id: 'lru',
+      label: $localize`Least recently used`,
+      summary: $localize`The file nobody asked for in the longest time goes first.`,
+      badge: $localize`Default`,
+    },
+    {
+      id: 'cost_lru',
+      label: $localize`LRU weighted by cost`,
+      summary: $localize`Like LRU, but a file that is slow to fetch again may stay idle longer.`,
+    },
+    {
+      id: 'gdsf',
+      label: $localize`Value per byte`,
+      summary: $localize`Frequency × cost ÷ size: keeps what brings the most for the room it takes.`,
+      badge: $localize`Recommended`,
+    },
+    {
+      id: 'lfu',
+      label: $localize`Least frequently used`,
+      summary: $localize`Counts downloads; the count fades with time.`,
+    },
+    {
+      id: 'fifo',
+      label: $localize`First in, first out`,
+      summary: $localize`A ring: the oldest cached files go, accesses do not count.`,
+    },
+  ];
+
+  /** The admission policies, as the cards present them. */
+  protected readonly admissions: {
+    id: CacheAdmissionPolicy;
+    label: string;
+    summary: string;
+    badge?: string;
+  }[] = [
+    {
+      id: 'always',
+      label: $localize`Store every file`,
+      summary: $localize`A file is stored the first time it is asked for.`,
+      badge: $localize`Default`,
+    },
+    {
+      id: 'second_request',
+      label: $localize`Store on the second request`,
+      summary: $localize`The first request is served from the Hub without being kept; the file is stored when someone asks again.`,
+    },
+    {
+      id: 'frequency',
+      label: $localize`Store if asked for more than the file it would replace`,
+      summary: $localize`When the cache is full, a new file must have been asked for more often than the next file to be evicted.`,
+    },
   ];
 
   /** Draft fields that edit a setting under a different name. */

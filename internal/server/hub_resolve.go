@@ -138,7 +138,7 @@ func (s *Server) knownCommit(res *fileResolution) string {
 func (s *Server) serveCacheHit(res *fileResolution, commit, errorDetail string) bool {
 	cached, err := s.findArtifact(res.r.Context(), res.repoPK, commit, res.parsed.FilePath)
 	if err == nil {
-		s.touchArtifact(res.r.Context(), cached.ID)
+		s.touchArtifact(res.r.Context(), cached.ID, res.r.Method == http.MethodGet)
 		s.logger.Debug("cache hit", "request_id", requestID(res.r.Context()), "repo_id", res.parsed.RepoID, "path", safeLogValue(res.parsed.FilePath, 300), "commit", commit, "bytes", cached.Size)
 		recordHit := func() {
 			s.recordDownload(res.r.Context(), res.repoPK, commit, res.parsed.FilePath, "hit", cached.Size, "")
@@ -178,10 +178,10 @@ func (s *Server) healMissingObject(res *fileResolution, cached artifact, commit 
 	return true
 }
 
-// touchArtifact records an access; a failure only costs LRU accuracy, so it is
-// logged and not surfaced.
-func (s *Server) touchArtifact(ctx context.Context, id string) {
-	if err := s.db.TouchArtifact(ctx, id); err != nil {
+// touchArtifact records an access; a failure only costs eviction accuracy, so it
+// is logged and not surfaced.
+func (s *Server) touchArtifact(ctx context.Context, id string, download bool) {
+	if err := s.db.TouchArtifact(ctx, id, download, s.currentConfig().CacheEviction.HalfLife()); err != nil {
 		s.logger.Warn("artifact access time could not be recorded", "request_id", requestID(ctx))
 	}
 }
@@ -310,6 +310,7 @@ type cacheFill struct {
 	digest      string
 	resume      *downloadResume
 	streamed    bool
+	started     time.Time
 }
 
 // fillCache downloads the file from the Hub, stores it in object storage and
@@ -323,12 +324,12 @@ func (s *Server) fillCache(res *fileResolution) {
 		if leader {
 			defer s.finishCacheMiss(missKey)
 		}
-		s.streamUncachedMiss(w, r, res.parsed, res.meta, res.commit)
+		s.streamUncachedMiss(w, r, res.parsed, res.meta, res.commit, "")
 		return
 	}
 	if !leader {
 		if r.Method == http.MethodGet && res.expectedLFS == "" {
-			s.streamUncachedMiss(w, r, res.parsed, res.meta, res.commit)
+			s.streamUncachedMiss(w, r, res.parsed, res.meta, res.commit, "")
 			return
 		}
 		select {
@@ -339,6 +340,9 @@ func (s *Server) fillCache(res *fileResolution) {
 		return
 	}
 	defer s.finishCacheMiss(missKey)
+	if !s.admitFill(res) {
+		return
+	}
 	releaseSlot, slotErr := s.acquireFillSlot(r.Context())
 	if slotErr != nil {
 		if errors.Is(slotErr, errFillBusy) {
@@ -390,7 +394,7 @@ func (s *Server) fillCache(res *fileResolution) {
 		s.logger.Info("another instance is filling this file; serving it from the Hub meanwhile", "request_id", requestID(fill.ctx), "wait", fillLockWait.String())
 		s.finishDownload(fill.ctx, fill.downloadID, 0, "resume_lock_wait")
 		if r.Method == http.MethodGet && res.expectedLFS == "" {
-			s.streamUncachedMiss(w, r, res.parsed, res.meta, res.commit)
+			s.streamUncachedMiss(w, r, res.parsed, res.meta, res.commit, "")
 			return
 		}
 		w.Header().Set("Retry-After", "30")
@@ -416,6 +420,7 @@ func (s *Server) fillCache(res *fileResolution) {
 			_ = os.Remove(name)
 		}
 	}()
+	fill.started = time.Now()
 	var ok bool
 	if res.sizeKnown {
 		ok = s.downloadKnownSize(fill)
@@ -612,6 +617,11 @@ func (s *Server) publishDownload(fill *cacheFill) {
 			return
 		}
 	}
+	// A fill's duration prices the next miss only when it fetched the whole file.
+	fillSeconds := 0.0
+	if !blobExists && (fill.resume == nil || fill.resume.ResumedBytes == 0) {
+		fillSeconds = time.Since(fill.started).Seconds()
+	}
 	meta := res.meta
 	meta.Size = fill.size
 	meta.ContentType = contentType
@@ -631,6 +641,7 @@ func (s *Server) publishDownload(fill *cacheFill) {
 		// Whether this fill put the object there, or relied on a blob row that may
 		// have been collected since it was looked at.
 		ObjectStored: !blobExists,
+		FillSeconds:  fillSeconds,
 	}, func(ctx context.Context, existingKey string) error {
 		if _, headErr := objectStore.Head(ctx, existingKey); headErr != nil {
 			if !storage.IsNotFound(headErr) {

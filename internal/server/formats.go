@@ -43,7 +43,7 @@ func (s *Server) formatRefusal(allow bool, filePath string) string {
 
 func (s *Server) countRefusedFormat(where string) {
 	if s.metrics != nil {
-		s.metrics.add("hfproxy_unsafe_format_refused_total", []string{where}, 1)
+		s.metrics.add("hfproxy_unsafe_format_refused_total", []string{"where=" + where}, 1)
 	}
 }
 

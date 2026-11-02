@@ -208,6 +208,7 @@ export interface ManagedSettings {
   session_absolute_ttl: string;
   cache_max_file_size: number;
   cache_max_total_size: number;
+  cache_eviction: CacheEviction;
   /** Download limits; 0 turns each one off. */
   download_max_concurrent: number;
   download_rate_limit: number;
@@ -242,6 +243,26 @@ export interface ManagedSettings {
   log_level: 'debug' | 'info' | 'warn' | 'error';
   /** Settings pinned to the environment (HFPROXY_LOCKED_SETTINGS): read-only here. */
   locked: string[];
+}
+
+/** The cache eviction strategies the server knows, in the order the console shows them. */
+export type CacheStrategy = 'lru' | 'cost_lru' | 'gdsf' | 'lfu' | 'fifo';
+
+/** Whether a file is stored the first time it is asked for. */
+export type CacheAdmissionPolicy = 'always' | 'second_request' | 'frequency';
+
+/** Which files leave the cache, and when. Every limit is off at 0. */
+export interface CacheEviction {
+  strategy: CacheStrategy;
+  target_percent: number;
+  max_repository_size: number;
+  max_namespace_size: number;
+  max_revisions: number;
+  max_idle_hours: number;
+  fifo: { ring_size: number; ring_files: number };
+  frequency: { half_life_hours: number };
+  cost: { weight: number; bandwidth: number; latency_seconds: number };
+  admission: { policy: CacheAdmissionPolicy; window_hours: number; min_size: number };
 }
 
 export interface SettingsDraft extends ManagedSettings {

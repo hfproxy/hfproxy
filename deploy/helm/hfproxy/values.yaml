@@ -30,6 +30,10 @@ config:
   # addresses are read from X-Forwarded-For.
   TRUSTED_PROXIES: ""
   CACHE_MAX_TOTAL_SIZE: "0"
+  # lru, fifo, lfu, cost_lru or gdsf; always, second_request or frequency.
+  # See docs/cache-strategies.md. Also editable in the console.
+  CACHE_EVICTION_STRATEGY: lru
+  CACHE_ADMISSION: always
   CACHE_FILL_CONCURRENCY: "4"
   STAGING_MIN_FREE_BYTES: "1073741824"
   # Console settings pinned to these values (see README, "Settings precedence").

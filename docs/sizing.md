@@ -25,7 +25,7 @@ At the default concurrency of 4 and a 30 GiB largest file, that is 120 GiB, so a
 bucket ≥ hot set × 1.2, and set HFPROXY_CACHE_MAX_TOTAL_SIZE to that figure
 ```
 
-With a quota, the least recently used unpinned files are evicted when it is exceeded; without one the cache only grows. Pinned files (`hfproxy cache pins`) are never evicted: keep them well under the quota (the alert fires at 80%). The bucket must stay private and allow the service identity to read, write and delete.
+With a quota, unpinned files are evicted when it is exceeded, least recently used first unless another [strategy](cache-strategies.md) is chosen; without one the cache only grows. Pinned files (`hfproxy cache pins`) are never evicted: keep them well under the quota (the alert fires at 80%). The bucket must stay private and allow the service identity to read, write and delete.
 
 ## PostgreSQL
 

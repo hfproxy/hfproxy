@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hfproxy/hfproxy/internal/config"
 	"github.com/hfproxy/hfproxy/internal/db"
 )
 
@@ -27,7 +28,6 @@ const (
 	retentionBatch         = 5000
 	retentionMaxBatches    = 200
 	evictionBatch          = 200
-	evictionTargetPercent  = 90
 )
 
 // acquireFillSlot bounds how many cache fills (and their staging files) run at
@@ -176,51 +176,166 @@ func (s *Server) retainInBatches(ctx context.Context, job db.RetentionJob, older
 	return total, nil
 }
 
-// evictOverQuota enforces CacheMaxTotalSize: when live blobs exceed the quota
-// it drops the least recently used artifacts until usage is back under 90% of
-// it. Blobs left without artifacts are marked orphaned, and the existing
-// garbage collector deletes their objects after the grace period.
+// evictOverQuota enforces the cache limits: the idle and revision limits name
+// files outright, then the per-repository, per-namespace and total sizes each
+// drop files in the order of the chosen strategy. Blobs left without artifacts
+// are marked orphaned, and the existing garbage collector deletes their objects
+// after the grace period.
 func (s *Server) evictOverQuota(ctx context.Context) (int, error) {
-	limit := s.currentConfig().CacheMaxTotalSize
-	if limit <= 0 {
-		return 0, nil
-	}
-	total, err := s.db.LiveBytes(ctx)
-	if err != nil {
-		return 0, err
-	}
-	if total <= limit {
-		return 0, nil
-	}
-	target := int64(float64(limit) * evictionTargetPercent / 100)
+	cfg := s.currentConfig()
+	limits := cfg.CacheEviction.Normalized()
+	policy := db.EvictionPolicy{Strategy: limits.Strategy, HalfLife: limits.HalfLife(), CostWeight: limits.Cost.Weight, CostBandwidth: limits.Cost.Bandwidth, CostLatency: limits.Cost.LatencySeconds}
 	evicted := 0
-	for total > target {
-		batch, err := s.db.EvictionCandidates(ctx, evictionBatch)
+	for _, step := range []func(context.Context, config.CacheEviction, db.EvictionPolicy) (int, error){
+		s.evictIdle, s.evictStaleRevisions, s.evictOversizedScopes, s.evictRingFiles,
+	} {
+		n, err := step(ctx, limits, policy)
+		evicted += n
 		if err != nil {
 			return evicted, err
 		}
-		if len(batch) == 0 {
-			break
+	}
+	limit := cfg.CacheMaxTotalSize
+	if ring := limits.FIFO.RingSize; limits.Strategy == config.EvictFIFO && ring > 0 && (limit == 0 || ring < limit) {
+		limit = ring
+	}
+	if limit <= 0 {
+		return evicted, nil
+	}
+	total, err := s.db.LiveBytes(ctx)
+	if err != nil {
+		return evicted, err
+	}
+	if total <= limit {
+		return evicted, nil
+	}
+	target := evictionTarget(limit, limits)
+	n, err := s.evictUntil(ctx, "total", func(ctx context.Context) ([]db.EvictionCandidate, error) {
+		return s.db.EvictionCandidates(ctx, policy, db.EvictionScope{}, evictionBatch)
+	}, func(_ context.Context, freed int64) (bool, error) {
+		total -= freed
+		return total <= target, nil
+	})
+	evicted += n
+	if err != nil {
+		return evicted, err
+	}
+	if total > limit {
+		s.logger.Warn("the cache is over its size limit but what remains is pinned or still referenced", "limit_bytes", limit, "used_bytes", total)
+	}
+	return evicted, nil
+}
+
+func evictionTarget(limit int64, limits config.CacheEviction) int64 {
+	return int64(float64(limit) * float64(limits.TargetPercent) / 100)
+}
+
+// evictUntil drops the files next returns, batch after batch, until done says
+// enough, given the bytes each one freed, or nothing is left to drop.
+func (s *Server) evictUntil(ctx context.Context, reason string, next func(context.Context) ([]db.EvictionCandidate, error), done func(context.Context, int64) (bool, error)) (int, error) {
+	evicted := 0
+	for {
+		batch, err := next(ctx)
+		if err != nil || len(batch) == 0 {
+			return evicted, err
 		}
 		for _, c := range batch {
 			freed, err := s.db.EvictArtifact(ctx, c.ArtifactID, c.BlobID)
 			if err != nil {
 				return evicted, err
 			}
-			total -= freed
 			evicted++
 			if s.metrics != nil {
-				s.metrics.add("hfproxy_cache_evictions_total", nil, 1)
+				s.metrics.add("hfproxy_cache_evictions_total", []string{"reason=" + reason}, 1)
 			}
-			if total <= target {
-				break
+			stop, err := done(ctx, freed)
+			if err != nil || stop {
+				return evicted, err
 			}
 		}
 	}
-	if total > limit {
-		s.logger.Warn("the cache is over its size limit but what remains is pinned or still referenced", "limit_bytes", limit, "used_bytes", total)
+}
+
+func neverDone(context.Context, int64) (bool, error) { return false, nil }
+
+// evictIdle drops the files nobody asked for during MaxIdleHours.
+func (s *Server) evictIdle(ctx context.Context, limits config.CacheEviction, policy db.EvictionPolicy) (int, error) {
+	if limits.MaxIdleHours <= 0 {
+		return 0, nil
+	}
+	scope := db.EvictionScope{IdleFor: time.Duration(limits.MaxIdleHours) * time.Hour}
+	return s.evictUntil(ctx, "idle", func(ctx context.Context) ([]db.EvictionCandidate, error) {
+		return s.db.EvictionCandidates(ctx, policy, scope, evictionBatch)
+	}, neverDone)
+}
+
+// evictStaleRevisions keeps the MaxRevisions most recently used commits of each
+// repository. A file a newer commit shares keeps its blob and only loses its
+// entry for the old commit.
+func (s *Server) evictStaleRevisions(ctx context.Context, limits config.CacheEviction, _ db.EvictionPolicy) (int, error) {
+	if limits.MaxRevisions <= 0 {
+		return 0, nil
+	}
+	return s.evictUntil(ctx, "revisions", func(ctx context.Context) ([]db.EvictionCandidate, error) {
+		return s.db.StaleRevisionCandidates(ctx, limits.MaxRevisions, evictionBatch)
+	}, neverDone)
+}
+
+// evictOversizedScopes brings each repository, then each namespace, back under
+// its limit. Usage is read again after each file because a blob can be shared
+// inside a scope, where dropping one of its entries frees nothing.
+func (s *Server) evictOversizedScopes(ctx context.Context, limits config.CacheEviction, policy db.EvictionPolicy) (int, error) {
+	evicted := 0
+	for _, level := range []struct {
+		reason string
+		limit  int64
+		over   func(context.Context, int64) ([]string, error)
+		scope  func(string) db.EvictionScope
+	}{
+		{"repository", limits.MaxRepositorySize, s.db.RepositoriesOver, func(id string) db.EvictionScope { return db.EvictionScope{RepositoryID: id} }},
+		{"namespace", limits.MaxNamespaceSize, s.db.NamespacesOver, func(name string) db.EvictionScope { return db.EvictionScope{Namespace: name} }},
+	} {
+		if level.limit <= 0 {
+			continue
+		}
+		names, err := level.over(ctx, level.limit)
+		if err != nil {
+			return evicted, err
+		}
+		target := evictionTarget(level.limit, limits)
+		for _, name := range names {
+			scope := level.scope(name)
+			n, err := s.evictUntil(ctx, level.reason, func(ctx context.Context) ([]db.EvictionCandidate, error) {
+				return s.db.EvictionCandidates(ctx, policy, scope, evictionBatch)
+			}, func(ctx context.Context, _ int64) (bool, error) {
+				used, err := s.db.ScopeBytes(ctx, scope)
+				return used <= target, err
+			})
+			evicted += n
+			if err != nil {
+				return evicted, err
+			}
+		}
 	}
 	return evicted, nil
+}
+
+// evictRingFiles holds the circular cache of the fifo strategy to its number of
+// files.
+func (s *Server) evictRingFiles(ctx context.Context, limits config.CacheEviction, policy db.EvictionPolicy) (int, error) {
+	if limits.Strategy != config.EvictFIFO || limits.FIFO.RingFiles <= 0 {
+		return 0, nil
+	}
+	files, err := s.db.CachedFiles(ctx)
+	if err != nil || files <= limits.FIFO.RingFiles {
+		return 0, err
+	}
+	return s.evictUntil(ctx, "ring", func(ctx context.Context) ([]db.EvictionCandidate, error) {
+		return s.db.EvictionCandidates(ctx, policy, db.EvictionScope{}, evictionBatch)
+	}, func(context.Context, int64) (bool, error) {
+		files--
+		return files <= limits.FIFO.RingFiles, nil
+	})
 }
 
 // pinnedBytes is the size of the live blobs that eviction must not touch.

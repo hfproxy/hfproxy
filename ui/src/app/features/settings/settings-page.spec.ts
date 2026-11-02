@@ -25,6 +25,18 @@ const settings: ManagedSettings = {
   session_idle_ttl: '8h0m0s',
   session_absolute_ttl: '24h0m0s',
   cache_max_file_size: 107374182400,
+  cache_eviction: {
+    strategy: 'lru',
+    target_percent: 90,
+    max_repository_size: 0,
+    max_namespace_size: 0,
+    max_revisions: 0,
+    max_idle_hours: 0,
+    fifo: { ring_size: 0, ring_files: 0 },
+    frequency: { half_life_hours: 168 },
+    cost: { weight: 0.5, bandwidth: 52428800, latency_seconds: 1 },
+    admission: { policy: 'always', window_hours: 168, min_size: 67108864 },
+  },
   cache_max_total_size: 5368709120,
   cache_ref_ttl: '1m0s',
   cache_negative_ttl: '30s',
@@ -147,7 +159,66 @@ describe('Settings page', () => {
     expect(field!.type).toBe('number');
     expect(field!.min).toBe('0');
     expect(field!.value).toBe('5368709120');
-    expect(fixture.nativeElement.textContent).toContain('Pinned files are never removed');
+    expect(fixture.nativeElement.textContent).toContain('are never removed');
+  });
+
+  it('shows the settings of the chosen strategy and sends the eviction settings back', async () => {
+    const fixture = TestBed.createComponent(SettingsPageComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/v1/settings').flush(settings);
+    await flushMicrotasks();
+    const internals = fixture.componentInstance as unknown as {
+      section: { set(value: string): void };
+      draft: ManagedSettings | null;
+      save(): Promise<void>;
+    };
+    internals.section.set('cache');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelectorAll('input[name="evictionStrategy"]').length).toBe(5);
+    expect(root.querySelector('input[name="ringFiles"]')).toBeNull();
+    expect(root.querySelector('input[name="costWeight"]')).toBeNull();
+    expect(root.querySelectorAll('input[name="admissionPolicy"]').length).toBe(3);
+    expect(root.querySelector('input[name="admissionWindowHours"]')).toBeNull();
+    (root.querySelector('#admission-second_request') as HTMLInputElement).click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(root.querySelector('input[name="admissionWindowHours"]')).not.toBeNull();
+    expect(root.textContent).toContain('Right for a shared proxy where many models are tried once');
+
+    (root.querySelector('#strategy-fifo') as HTMLInputElement).click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(internals.draft!.cache_eviction.strategy).toBe('fifo');
+    const ring = root.querySelector('input[name="ringFiles"]') as HTMLInputElement | null;
+    expect(ring).not.toBeNull();
+    ring!.value = '1000';
+    ring!.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(root.textContent).toContain('A ring: files leave in the order they came in');
+
+    const saving = internals.save();
+    await flushMicrotasks();
+    const put = http.expectOne((request) => request.method === 'PUT');
+    const body = put.request.body as Record<string, unknown>;
+    expect(body['cache_eviction']).toEqual(
+      expect.objectContaining({
+        strategy: 'fifo',
+        fifo: { ring_size: 0, ring_files: 1000 },
+        admission: expect.objectContaining({ policy: 'second_request' }),
+      }),
+    );
+    put.flush({ ...settings, cache_eviction: body['cache_eviction'] });
+    await flushMicrotasks();
+    http
+      .match('/api/v1/auth/providers')
+      .forEach((request) => request.flush({ local: true, oidc: false, ldap: false }));
+    await saving;
   });
 
   it('lets the log level be chosen in the observability section and sends it back', async () => {

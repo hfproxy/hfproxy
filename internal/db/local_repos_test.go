@@ -148,7 +148,7 @@ func TestPublishedContentIsKeptUntilItsCommitAndNeverEvicted(t *testing.T) {
 	if err := store.SQL.QueryRow(`SELECT orphaned_at FROM blobs WHERE sha256=$1`, sum).Scan(&orphaned); err != nil || orphaned != nil {
 		t.Fatalf("a committed blob must not stay marked orphaned: %v %v", orphaned, err)
 	}
-	if candidates, err := store.EvictionCandidates(ctx, 100); err != nil || len(candidates) != 0 {
+	if candidates, err := store.EvictionCandidates(ctx, EvictionPolicy{}, EvictionScope{}, 100); err != nil || len(candidates) != 0 {
 		t.Fatalf("published files are eviction candidates: %v %v", candidates, err)
 	}
 	if live, err := store.LiveBytes(ctx); err != nil || live != 0 {

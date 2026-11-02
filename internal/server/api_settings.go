@@ -15,56 +15,57 @@ import (
 )
 
 type settingsResponse struct {
-	PublicURL              string   `json:"public_url"`
-	HFBaseURL              string   `json:"hf_base_url"`
-	HFProxySet             bool     `json:"hf_proxy_set"`
-	HFAllowedHosts         []string `json:"hf_allowed_hosts"`
-	HFTimeout              string   `json:"hf_timeout"`
-	HFTokenSet             bool     `json:"hf_token_set"`
-	S3Endpoint             string   `json:"s3_endpoint"`
-	S3Region               string   `json:"s3_region"`
-	S3Bucket               string   `json:"s3_bucket"`
-	S3Prefix               string   `json:"s3_prefix"`
-	S3ForcePathStyle       bool     `json:"s3_force_path_style"`
-	S3ServerSideEncryption bool     `json:"s3_server_side_encryption"`
-	S3AccessKeySet         bool     `json:"s3_access_key_set"`
-	S3SecretKeySet         bool     `json:"s3_secret_key_set"`
-	AuthMode               string   `json:"auth_mode"`
-	AnonymousPublicRead    bool     `json:"anonymous_public_read"`
-	SessionIdleTTL         string   `json:"session_idle_ttl"`
-	SessionAbsoluteTTL     string   `json:"session_absolute_ttl"`
-	CacheMaxFileSize       int64    `json:"cache_max_file_size"`
-	CacheMaxTotalSize      int64    `json:"cache_max_total_size"`
-	DownloadMaxConcurrent  int64    `json:"download_max_concurrent"`
-	DownloadRateLimit      int64    `json:"download_rate_limit"`
-	DownloadDailyQuota     int64    `json:"download_daily_quota"`
-	CustomRepos            bool     `json:"custom_repositories"`
-	SafeFormatsOnly        bool     `json:"safe_formats_only"`
-	UploadMaxFileSize      int64    `json:"upload_max_file_size"`
-	UploadUserQuota        int64    `json:"upload_user_quota"`
-	CacheRefTTL            string   `json:"cache_ref_ttl"`
-	CacheNegativeTTL       string   `json:"cache_negative_ttl"`
-	CacheGCGrace           string   `json:"cache_gc_grace"`
-	OIDCIssuer             string   `json:"oidc_issuer"`
-	OIDCClientID           string   `json:"oidc_client_id"`
-	OIDCClientSecretSet    bool     `json:"oidc_client_secret_set"`
-	OIDCRedirectURL        string   `json:"oidc_redirect_url"`
-	OIDCAutoProvision      bool     `json:"oidc_auto_provision"`
-	LDAPURL                string   `json:"ldap_url"`
-	LDAPStartTLS           bool     `json:"ldap_starttls"`
-	LDAPBindDN             string   `json:"ldap_bind_dn"`
-	LDAPBindPasswordSet    bool     `json:"ldap_bind_password_set"`
-	LDAPBaseDN             string   `json:"ldap_base_dn"`
-	LDAPUserFilter         string   `json:"ldap_user_filter"`
-	LDAPAutoProvision      bool     `json:"ldap_auto_provision"`
-	MetricsEnabled         bool     `json:"metrics_enabled"`
-	MetricsPath            string   `json:"metrics_path"`
-	TracingEnabled         bool     `json:"tracing_enabled"`
-	TracingServiceName     string   `json:"tracing_service_name"`
-	TracingSamplingRatio   float64  `json:"tracing_sampling_ratio"`
-	OTLPEndpoint           string   `json:"otlp_endpoint"`
-	CacheInventoryRefresh  string   `json:"cache_inventory_refresh"`
-	LogLevel               string   `json:"log_level"`
+	PublicURL              string               `json:"public_url"`
+	HFBaseURL              string               `json:"hf_base_url"`
+	HFProxySet             bool                 `json:"hf_proxy_set"`
+	HFAllowedHosts         []string             `json:"hf_allowed_hosts"`
+	HFTimeout              string               `json:"hf_timeout"`
+	HFTokenSet             bool                 `json:"hf_token_set"`
+	S3Endpoint             string               `json:"s3_endpoint"`
+	S3Region               string               `json:"s3_region"`
+	S3Bucket               string               `json:"s3_bucket"`
+	S3Prefix               string               `json:"s3_prefix"`
+	S3ForcePathStyle       bool                 `json:"s3_force_path_style"`
+	S3ServerSideEncryption bool                 `json:"s3_server_side_encryption"`
+	S3AccessKeySet         bool                 `json:"s3_access_key_set"`
+	S3SecretKeySet         bool                 `json:"s3_secret_key_set"`
+	AuthMode               string               `json:"auth_mode"`
+	AnonymousPublicRead    bool                 `json:"anonymous_public_read"`
+	SessionIdleTTL         string               `json:"session_idle_ttl"`
+	SessionAbsoluteTTL     string               `json:"session_absolute_ttl"`
+	CacheMaxFileSize       int64                `json:"cache_max_file_size"`
+	CacheMaxTotalSize      int64                `json:"cache_max_total_size"`
+	CacheEviction          config.CacheEviction `json:"cache_eviction"`
+	DownloadMaxConcurrent  int64                `json:"download_max_concurrent"`
+	DownloadRateLimit      int64                `json:"download_rate_limit"`
+	DownloadDailyQuota     int64                `json:"download_daily_quota"`
+	CustomRepos            bool                 `json:"custom_repositories"`
+	SafeFormatsOnly        bool                 `json:"safe_formats_only"`
+	UploadMaxFileSize      int64                `json:"upload_max_file_size"`
+	UploadUserQuota        int64                `json:"upload_user_quota"`
+	CacheRefTTL            string               `json:"cache_ref_ttl"`
+	CacheNegativeTTL       string               `json:"cache_negative_ttl"`
+	CacheGCGrace           string               `json:"cache_gc_grace"`
+	OIDCIssuer             string               `json:"oidc_issuer"`
+	OIDCClientID           string               `json:"oidc_client_id"`
+	OIDCClientSecretSet    bool                 `json:"oidc_client_secret_set"`
+	OIDCRedirectURL        string               `json:"oidc_redirect_url"`
+	OIDCAutoProvision      bool                 `json:"oidc_auto_provision"`
+	LDAPURL                string               `json:"ldap_url"`
+	LDAPStartTLS           bool                 `json:"ldap_starttls"`
+	LDAPBindDN             string               `json:"ldap_bind_dn"`
+	LDAPBindPasswordSet    bool                 `json:"ldap_bind_password_set"`
+	LDAPBaseDN             string               `json:"ldap_base_dn"`
+	LDAPUserFilter         string               `json:"ldap_user_filter"`
+	LDAPAutoProvision      bool                 `json:"ldap_auto_provision"`
+	MetricsEnabled         bool                 `json:"metrics_enabled"`
+	MetricsPath            string               `json:"metrics_path"`
+	TracingEnabled         bool                 `json:"tracing_enabled"`
+	TracingServiceName     string               `json:"tracing_service_name"`
+	TracingSamplingRatio   float64              `json:"tracing_sampling_ratio"`
+	OTLPEndpoint           string               `json:"otlp_endpoint"`
+	CacheInventoryRefresh  string               `json:"cache_inventory_refresh"`
+	LogLevel               string               `json:"log_level"`
 	// Revision names the saved version these settings come from; saving sends it
 	// back, and is refused when the settings changed in between.
 	Revision string `json:"revision"`
@@ -73,61 +74,62 @@ type settingsResponse struct {
 }
 
 type settingsInput struct {
-	PublicURL              string   `json:"public_url"`
-	HFBaseURL              string   `json:"hf_base_url"`
-	HFProxyURL             string   `json:"hf_proxy_url"`
-	ClearHFProxy           bool     `json:"clear_hf_proxy"`
-	HFAllowedHosts         []string `json:"hf_allowed_hosts"`
-	HFTimeout              string   `json:"hf_timeout"`
-	HFToken                string   `json:"hf_token"`
-	ClearHFToken           bool     `json:"clear_hf_token"`
-	S3Endpoint             string   `json:"s3_endpoint"`
-	S3Region               string   `json:"s3_region"`
-	S3Bucket               string   `json:"s3_bucket"`
-	S3Prefix               string   `json:"s3_prefix"`
-	S3ForcePathStyle       bool     `json:"s3_force_path_style"`
-	S3ServerSideEncryption bool     `json:"s3_server_side_encryption"`
-	S3AccessKey            string   `json:"s3_access_key"`
-	S3SecretKey            string   `json:"s3_secret_key"`
-	ClearS3Credentials     bool     `json:"clear_s3_credentials"`
-	AuthMode               string   `json:"auth_mode"`
-	AnonymousPublicRead    bool     `json:"anonymous_public_read"`
-	SessionIdleTTL         string   `json:"session_idle_ttl"`
-	SessionAbsoluteTTL     string   `json:"session_absolute_ttl"`
-	CacheMaxFileSize       int64    `json:"cache_max_file_size"`
-	CacheMaxTotalSize      *int64   `json:"cache_max_total_size"`
-	DownloadMaxConcurrent  *int64   `json:"download_max_concurrent"`
-	DownloadRateLimit      *int64   `json:"download_rate_limit"`
-	DownloadDailyQuota     *int64   `json:"download_daily_quota"`
-	CustomRepos            *bool    `json:"custom_repositories"`
-	SafeFormatsOnly        *bool    `json:"safe_formats_only"`
-	UploadMaxFileSize      *int64   `json:"upload_max_file_size"`
-	UploadUserQuota        *int64   `json:"upload_user_quota"`
-	CacheRefTTL            string   `json:"cache_ref_ttl"`
-	CacheNegativeTTL       string   `json:"cache_negative_ttl"`
-	CacheGCGrace           string   `json:"cache_gc_grace"`
-	OIDCIssuer             string   `json:"oidc_issuer"`
-	OIDCClientID           string   `json:"oidc_client_id"`
-	OIDCClientSecret       string   `json:"oidc_client_secret"`
-	ClearOIDCSecret        bool     `json:"clear_oidc_client_secret"`
-	OIDCRedirectURL        string   `json:"oidc_redirect_url"`
-	OIDCAutoProvision      bool     `json:"oidc_auto_provision"`
-	LDAPURL                string   `json:"ldap_url"`
-	LDAPStartTLS           bool     `json:"ldap_starttls"`
-	LDAPBindDN             string   `json:"ldap_bind_dn"`
-	LDAPBindPassword       string   `json:"ldap_bind_password"`
-	ClearLDAPPassword      bool     `json:"clear_ldap_bind_password"`
-	LDAPBaseDN             string   `json:"ldap_base_dn"`
-	LDAPUserFilter         string   `json:"ldap_user_filter"`
-	LDAPAutoProvision      bool     `json:"ldap_auto_provision"`
-	MetricsEnabled         bool     `json:"metrics_enabled"`
-	MetricsPath            string   `json:"metrics_path"`
-	TracingEnabled         bool     `json:"tracing_enabled"`
-	TracingServiceName     string   `json:"tracing_service_name"`
-	TracingSamplingRatio   float64  `json:"tracing_sampling_ratio"`
-	OTLPEndpoint           string   `json:"otlp_endpoint"`
-	CacheInventoryRefresh  string   `json:"cache_inventory_refresh"`
-	LogLevel               string   `json:"log_level"`
+	PublicURL              string                `json:"public_url"`
+	HFBaseURL              string                `json:"hf_base_url"`
+	HFProxyURL             string                `json:"hf_proxy_url"`
+	ClearHFProxy           bool                  `json:"clear_hf_proxy"`
+	HFAllowedHosts         []string              `json:"hf_allowed_hosts"`
+	HFTimeout              string                `json:"hf_timeout"`
+	HFToken                string                `json:"hf_token"`
+	ClearHFToken           bool                  `json:"clear_hf_token"`
+	S3Endpoint             string                `json:"s3_endpoint"`
+	S3Region               string                `json:"s3_region"`
+	S3Bucket               string                `json:"s3_bucket"`
+	S3Prefix               string                `json:"s3_prefix"`
+	S3ForcePathStyle       bool                  `json:"s3_force_path_style"`
+	S3ServerSideEncryption bool                  `json:"s3_server_side_encryption"`
+	S3AccessKey            string                `json:"s3_access_key"`
+	S3SecretKey            string                `json:"s3_secret_key"`
+	ClearS3Credentials     bool                  `json:"clear_s3_credentials"`
+	AuthMode               string                `json:"auth_mode"`
+	AnonymousPublicRead    bool                  `json:"anonymous_public_read"`
+	SessionIdleTTL         string                `json:"session_idle_ttl"`
+	SessionAbsoluteTTL     string                `json:"session_absolute_ttl"`
+	CacheMaxFileSize       int64                 `json:"cache_max_file_size"`
+	CacheMaxTotalSize      *int64                `json:"cache_max_total_size"`
+	CacheEviction          *config.CacheEviction `json:"cache_eviction"`
+	DownloadMaxConcurrent  *int64                `json:"download_max_concurrent"`
+	DownloadRateLimit      *int64                `json:"download_rate_limit"`
+	DownloadDailyQuota     *int64                `json:"download_daily_quota"`
+	CustomRepos            *bool                 `json:"custom_repositories"`
+	SafeFormatsOnly        *bool                 `json:"safe_formats_only"`
+	UploadMaxFileSize      *int64                `json:"upload_max_file_size"`
+	UploadUserQuota        *int64                `json:"upload_user_quota"`
+	CacheRefTTL            string                `json:"cache_ref_ttl"`
+	CacheNegativeTTL       string                `json:"cache_negative_ttl"`
+	CacheGCGrace           string                `json:"cache_gc_grace"`
+	OIDCIssuer             string                `json:"oidc_issuer"`
+	OIDCClientID           string                `json:"oidc_client_id"`
+	OIDCClientSecret       string                `json:"oidc_client_secret"`
+	ClearOIDCSecret        bool                  `json:"clear_oidc_client_secret"`
+	OIDCRedirectURL        string                `json:"oidc_redirect_url"`
+	OIDCAutoProvision      bool                  `json:"oidc_auto_provision"`
+	LDAPURL                string                `json:"ldap_url"`
+	LDAPStartTLS           bool                  `json:"ldap_starttls"`
+	LDAPBindDN             string                `json:"ldap_bind_dn"`
+	LDAPBindPassword       string                `json:"ldap_bind_password"`
+	ClearLDAPPassword      bool                  `json:"clear_ldap_bind_password"`
+	LDAPBaseDN             string                `json:"ldap_base_dn"`
+	LDAPUserFilter         string                `json:"ldap_user_filter"`
+	LDAPAutoProvision      bool                  `json:"ldap_auto_provision"`
+	MetricsEnabled         bool                  `json:"metrics_enabled"`
+	MetricsPath            string                `json:"metrics_path"`
+	TracingEnabled         bool                  `json:"tracing_enabled"`
+	TracingServiceName     string                `json:"tracing_service_name"`
+	TracingSamplingRatio   float64               `json:"tracing_sampling_ratio"`
+	OTLPEndpoint           string                `json:"otlp_endpoint"`
+	CacheInventoryRefresh  string                `json:"cache_inventory_refresh"`
+	LogLevel               string                `json:"log_level"`
 	// Revision is the one read with the settings being edited.
 	Revision string `json:"revision"`
 	// Locked is part of what the console reads back; it is ignored on input.
@@ -139,7 +141,7 @@ func settingsView(cfg config.Config) settingsResponse {
 		PublicURL: cfg.PublicURL, HFBaseURL: cfg.HFBaseURL, HFProxySet: cfg.HFProxyURL != "", HFAllowedHosts: cfg.HFAllowedHosts, HFTimeout: cfg.HFTimeout.String(), HFTokenSet: cfg.HFToken != "",
 		S3Endpoint: cfg.S3Endpoint, S3Region: cfg.S3Region, S3Bucket: cfg.S3Bucket, S3Prefix: cfg.S3Prefix, S3ForcePathStyle: cfg.S3ForcePathStyle, S3ServerSideEncryption: cfg.S3ServerSideEncryption,
 		S3AccessKeySet: cfg.S3AccessKey != "", S3SecretKeySet: cfg.S3SecretKey != "", AuthMode: cfg.AuthMode, AnonymousPublicRead: cfg.AnonymousPublicRead,
-		SessionIdleTTL: cfg.SessionIdleTTL.String(), SessionAbsoluteTTL: cfg.SessionAbsoluteTTL.String(), CacheMaxFileSize: cfg.CacheMaxFileSize, CacheMaxTotalSize: cfg.CacheMaxTotalSize, DownloadMaxConcurrent: cfg.DownloadMaxConcurrent, DownloadRateLimit: cfg.DownloadRateLimit, DownloadDailyQuota: cfg.DownloadDailyQuota, CustomRepos: cfg.CustomRepos, SafeFormatsOnly: cfg.SafeFormatsOnly, UploadMaxFileSize: cfg.MaxUploadFileSize(), UploadUserQuota: cfg.UploadUserQuota,
+		SessionIdleTTL: cfg.SessionIdleTTL.String(), SessionAbsoluteTTL: cfg.SessionAbsoluteTTL.String(), CacheMaxFileSize: cfg.CacheMaxFileSize, CacheMaxTotalSize: cfg.CacheMaxTotalSize, CacheEviction: cfg.CacheEviction.Normalized(), DownloadMaxConcurrent: cfg.DownloadMaxConcurrent, DownloadRateLimit: cfg.DownloadRateLimit, DownloadDailyQuota: cfg.DownloadDailyQuota, CustomRepos: cfg.CustomRepos, SafeFormatsOnly: cfg.SafeFormatsOnly, UploadMaxFileSize: cfg.MaxUploadFileSize(), UploadUserQuota: cfg.UploadUserQuota,
 		CacheRefTTL: cfg.CacheRefTTL.String(), CacheNegativeTTL: cfg.CacheNegativeTTL.String(), CacheGCGrace: cfg.CacheGCGrace.String(),
 		OIDCIssuer: cfg.OIDCIssuer, OIDCClientID: cfg.OIDCClientID, OIDCClientSecretSet: cfg.OIDCClientSecret != "", OIDCRedirectURL: cfg.OIDCRedirectURL,
 		OIDCAutoProvision: cfg.OIDCAutoProvision, LDAPURL: cfg.LDAPURL, LDAPStartTLS: cfg.LDAPStartTLS, LDAPBindDN: cfg.LDAPBindDN,
@@ -274,6 +276,13 @@ func (in settingsInput) apply(cfg config.Config) (config.Config, error) {
 			return config.Config{}, errors.New("the total cache size limit cannot be negative")
 		}
 		cfg.CacheMaxTotalSize = *in.CacheMaxTotalSize
+	}
+	// Older clients leave it out, and it stays as it is.
+	if in.CacheEviction != nil {
+		if err := in.CacheEviction.Validate(); err != nil {
+			return config.Config{}, err
+		}
+		cfg.CacheEviction = in.CacheEviction.Normalized()
 	}
 	// Like the cache limit, a limit left out of the request stays as it is and 0 turns it off.
 	for _, limit := range []struct {

@@ -411,7 +411,7 @@ func TestEvictionRetentionAndBlobCollection(t *testing.T) {
 	if count, size, _ := store.BlobTotals(ctx); count != 2 || size != 30 {
 		t.Fatalf("BlobTotals = %d %d", count, size)
 	}
-	cands, err := store.EvictionCandidates(ctx, 10)
+	cands, err := store.EvictionCandidates(ctx, EvictionPolicy{}, EvictionScope{}, 10)
 	if err != nil || len(cands) != 2 {
 		t.Fatalf("EvictionCandidates = %v %v", cands, err)
 	}
@@ -421,7 +421,7 @@ func TestEvictionRetentionAndBlobCollection(t *testing.T) {
 	}
 	// A pin keeps a file out of the candidates and counts as pinned bytes.
 	store.AddPin(ctx, repo, commit, "", owner)
-	if cands, _ := store.EvictionCandidates(ctx, 10); len(cands) != 0 {
+	if cands, _ := store.EvictionCandidates(ctx, EvictionPolicy{}, EvictionScope{}, 10); len(cands) != 0 {
 		t.Fatalf("pinned files must not be candidates: %v", cands)
 	}
 	if pinned, _ := store.PinnedBytes(ctx); pinned != 30 {
