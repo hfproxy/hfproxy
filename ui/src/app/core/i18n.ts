@@ -10,6 +10,8 @@ export const LANGUAGES = [
   { code: 'pt', name: 'Português' },
   { code: 'zh', name: '简体中文' },
   { code: 'ja', name: '日本語' },
+  { code: 'en-x-pirate', name: 'English pirate' },
+  { code: 'en-x-emoji', name: 'English emoji' },
 ] as const;
 
 export type LanguageCode = (typeof LANGUAGES)[number]['code'];
@@ -29,6 +31,8 @@ const messages: Record<Exclude<LanguageCode, 'en'>, () => Promise<{ default: Mes
   pt: () => import('../../locale/pt.json'),
   zh: () => import('../../locale/zh.json'),
   ja: () => import('../../locale/ja.json'),
+  'en-x-pirate': () => import('../../locale/en-x-pirate.json'),
+  'en-x-emoji': () => import('../../locale/en-x-emoji.json'),
 };
 
 const localeData: Record<Exclude<LanguageCode, 'en'>, () => Promise<{ default: unknown[] }>> = {
@@ -38,6 +42,8 @@ const localeData: Record<Exclude<LanguageCode, 'en'>, () => Promise<{ default: u
   pt: () => import('@angular/common/locales/pt'),
   zh: () => import('@angular/common/locales/zh'),
   ja: () => import('@angular/common/locales/ja'),
+  'en-x-pirate': () => import('@angular/common/locales/en'),
+  'en-x-emoji': () => import('@angular/common/locales/en'),
 };
 
 export function isLanguage(value: unknown): value is LanguageCode {

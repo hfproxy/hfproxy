@@ -24,7 +24,7 @@ The production assets are written to `dist/hfproxy/browser` and embedded in the 
 
 ## Translating the console
 
-The console is written in English and translated at run time with Angular's `$localize` and `@angular/localize`. English is the default; French (`fr`), Spanish (`es`), German (`de`), Portuguese (`pt`), Simplified Chinese (`zh`) and Japanese (`ja`) are translated. The chosen language is stored in the browser (`localStorage`, key `hfproxy.language`) and applied at start-up, so changing it reloads the page. Each language is a separate lazy chunk, loaded only when selected.
+The console is written in English and translated at run time with Angular's `$localize` and `@angular/localize`. English is the default; French (`fr`), Spanish (`es`), German (`de`), Portuguese (`pt`), Simplified Chinese (`zh`) and Japanese (`ja`) are translated, along with two English variants, pirate (`en-x-pirate`) and emoji (`en-x-emoji`), which keep the English date and number formats. The chosen language is stored in the browser (`localStorage`, key `hfproxy.language`) and applied at start-up, so changing it reloads the page. Each language is a separate lazy chunk, loaded only when selected.
 
 - Mark text in a template with `i18n` (and attributes with `i18n-title`, `i18n-placeholder`, `i18n-aria-label`, and so on). In TypeScript use the tagged template ``$localize`Text ${value}:NAME:` ``. Do not build sentences by concatenation.
 - After changing any text, run `npm run i18n:extract && npx prettier --write src/locale/messages.json`. It rewrites `src/locale/messages.json` (message id → English source). Add the new ids to every `src/locale/<code>.json`, keeping the `{$PLACEHOLDER}` tokens unchanged.
