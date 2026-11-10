@@ -4,7 +4,7 @@
 #   postgres://hfproxy:MOT_DE_PASSE@db.example.internal:5432/hfproxy?sslmode=verify-full
 services:
   hfproxy:
-    image: ghcr.io/hfproxy/hfproxy:0.0.4
+    image: ghcr.io/hfproxy/hfproxy:0.1.0
     environment:
       HFPROXY_LISTEN_ADDR: 0.0.0.0:8080
       HFPROXY_PUBLIC_URL: ${HFPROXY_PUBLIC_URL:?Set the public HTTPS URL}
