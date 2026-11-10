@@ -56,7 +56,7 @@ services:
   # the Compose network CIDR) so that client addresses are read from
   # X-Forwarded-For.
   caddy:
-    image: caddy:2.10-alpine
+    image: caddy:2.11-alpine
     ports:
       - "443:443"
       - "80:80"
